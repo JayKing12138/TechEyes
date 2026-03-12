@@ -1,0 +1,162 @@
+import axios from 'axios'
+import { AnalysisRequest, AnalysisState, ChatMessage, ConversationItem } from '../types'
+
+const API_BASE = '/api'
+
+const api = axios.create({
+  baseURL: API_BASE,
+  timeout: 30000,
+})
+
+let authToken = localStorage.getItem('techeyes_auth_token') || ''
+
+const CLIENT_ID_KEY = 'techeyes_client_id'
+
+const generateClientId = () => {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID()
+  }
+  return `guest_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`
+}
+
+const getClientId = () => {
+  let clientId = localStorage.getItem(CLIENT_ID_KEY)
+  if (!clientId) {
+    clientId = generateClientId()
+    localStorage.setItem(CLIENT_ID_KEY, clientId)
+  }
+  return clientId
+}
+
+export const setAuthToken = (token: string | null) => {
+  authToken = token || ''
+}
+
+api.interceptors.request.use((config) => {
+  const clientId = getClientId()
+
+  config.headers = config.headers || {}
+  config.headers['X-Client-Id'] = clientId
+
+  if (authToken) {
+    config.headers.Authorization = `Bearer ${authToken}`
+  }
+  return config
+})
+
+export const registerUser = async (request: { username: string; password: string }) => {
+  const response = await api.post('/auth/register', request)
+  return response.data
+}
+
+export const loginUser = async (request: { username: string; password: string }) => {
+  const response = await api.post('/auth/login', request)
+  return response.data
+}
+
+/** 提交分析请求 */
+export const submitAnalysis = async (request: AnalysisRequest) => {
+  const response = await api.post('/analyze', request)
+  return response.data
+}
+
+/** 获取实时分析进度 */
+export const getAnalysisProgress = async (sessionId: string): Promise<AnalysisState> => {
+  const response = await api.get(`/analysis/${sessionId}/progress`)
+  return response.data
+}
+
+/** 获取完整分析结果 */
+export const getAnalysisResult = async (sessionId: string) => {
+  const response = await api.get(`/analysis/${sessionId}/result`)
+  return response.data
+}
+
+/** 获取流式分析数据 */
+export const subscribeToAnalysis = (sessionId: string, onUpdate: (data: any) => void) => {
+  const params = new URLSearchParams()
+  params.set('client_id', getClientId())
+  if (authToken) {
+    params.set('access_token', authToken)
+  }
+
+  const eventSource = new EventSource(`${API_BASE}/analysis/${sessionId}/stream?${params.toString()}`)
+  
+  eventSource.onmessage = (event) => {
+    const data = JSON.parse(event.data)
+    onUpdate(data)
+  }
+
+  eventSource.onerror = () => {
+    eventSource.close()
+  }
+
+  return eventSource
+}
+
+/** 检查语义缓存 */
+export const checkSemanticCache = async (query: string) => {
+  const response = await api.post('/cache/check', { query })
+  return response.data
+}
+
+/** 获取历史分析记录 */
+export const getAnalysisHistory = async (params?: { limit?: number; query?: string }) => {
+  const response = await api.get('/history', { params })
+  return response.data
+}
+
+/** 删除历史记录 */
+export const deleteAnalysisHistory = async (sessionId: string) => {
+  const response = await api.delete(`/history/${sessionId}`)
+  return response.data
+}
+
+/** 创建对话会话 */
+export const createConversation = async (title?: string): Promise<ConversationItem> => {
+  const response = await api.post('/chat/conversations', { title })
+  return response.data
+}
+
+/** 获取会话列表 */
+export const getConversations = async (limit = 50): Promise<{ items: ConversationItem[]; total: number }> => {
+  const response = await api.get('/chat/conversations', { params: { limit } })
+  return response.data
+}
+
+/** 获取会话消息 */
+export const getConversationMessages = async (
+  conversationId: string,
+  limit = 100,
+): Promise<{ items: ChatMessage[]; total: number }> => {
+  const response = await api.get(`/chat/conversations/${conversationId}/messages`, { params: { limit } })
+  return response.data
+}
+
+/** 发送会话消息 */
+export const sendConversationMessage = async (
+  conversationId: string,
+  content: string,
+): Promise<{
+  conversation_id: string
+  user_message: ChatMessage
+  assistant_message: ChatMessage
+  cache: { hit: boolean; tier: string | null }
+}> => {
+  const response = await api.post(`/chat/conversations/${conversationId}/messages`, { content })
+  return response.data
+}
+
+/** 获取缓存统计 */
+export const getCacheStats = async () => {
+  const response = await api.get('/cache/stats')
+  return response.data
+}
+
+/** 取消分析会话 */
+export const cancelAnalysis = async (sessionId: string) => {
+  const response = await api.post(`/analysis/${sessionId}/cancel`)
+  return response.data
+}
+
+export default api

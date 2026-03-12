@@ -1,0 +1,18 @@
+"""检查前端发送的请求头"""
+
+print("请在浏览器控制台（F12）中运行以下代码：")
+print()
+print("```javascript")
+print("// 1. 检查localStorage")
+print("console.log('Client ID:', localStorage.getItem('techeyes_client_id'))")
+print("console.log('Auth Token:', localStorage.getItem('techeyes_auth_token'))")
+print()
+print("// 2. 如果有token，清除它")
+print("if (localStorage.getItem('techeyes_auth_token')) {")
+print("  console.log('发现过期token，正在清除...')")
+print("  localStorage.removeItem('techeyes_auth_token')")
+print("  location.reload()")
+print("} else {")
+print("  console.log('没有发现token')")
+print("}")
+print("```")

@@ -1,0 +1,209 @@
+"""多轮对话服务（含三级缓存协调）"""
+
+import json
+from datetime import datetime
+from typing import Optional
+
+import httpx
+from loguru import logger
+
+from config import get_config
+from services.cache_service import CacheService
+from services.conversation_store import ConversationStore
+
+
+class ChatService:
+    """多轮对话服务，负责会话管理、上下文组织、缓存命中"""
+
+    def __init__(self):
+        self.config = get_config()
+        self.store = ConversationStore()
+        self.cache = CacheService()
+        self._llm_key_invalid = self._is_placeholder_api_key(self.config.llm.api_key)
+        if self._llm_key_invalid:
+            logger.warning("LLM_API_KEY 无效或占位符，聊天将返回配置提示信息")
+
+    @staticmethod
+    def _is_placeholder_api_key(value: str) -> bool:
+        key = (value or "").strip().lower()
+        if not key:
+            return True
+        return (
+            "your_" in key
+            or "api_key_here" in key
+            or "replace" in key
+            or key in {"test", "demo", "placeholder"}
+        )
+
+    def create_conversation(self, conversation_id: str, owner_key: str, title: Optional[str]) -> dict:
+        return self.store.create_conversation(conversation_id=conversation_id, owner_key=owner_key, title=title)
+
+    def list_conversations(self, owner_key: str, limit: int = 50) -> list[dict]:
+        return self.store.list_conversations(owner_key=owner_key, limit=limit)
+
+    def list_messages(self, conversation_id: str, owner_key: str, limit: int = 100) -> list[dict]:
+        return self.store.list_messages(conversation_id=conversation_id, owner_key=owner_key, limit=limit)
+
+    async def send_message(self, conversation_id: str, owner_key: str, content: str) -> dict:
+        conversation = self.store.get_conversation(conversation_id=conversation_id, owner_key=owner_key)
+        if not conversation:
+            raise ValueError("conversation_not_found")
+
+        user_msg = self.store.add_message(
+            conversation_id=conversation_id,
+            owner_key=owner_key,
+            role="user",
+            content=content,
+        )
+
+        context_messages = self.store.list_messages(conversation_id=conversation_id, owner_key=owner_key, limit=12)
+        context_for_model = self._build_model_messages(context_messages)
+        context_signature = self._build_context_signature(context_messages)
+
+        model_signature = f"{self.config.llm.provider}:{self.config.llm.model_id}:chat-v1"
+        allow_public = not self._is_sensitive_query(content)
+
+        cached, cache_hit_tier = await self.cache.get_chat_cached_result(
+            owner_key=owner_key,
+            query=content,
+            context_text=context_signature,
+            model_signature=model_signature,
+            allow_public=allow_public,
+        )
+
+        if cached and cached.get("answer"):
+            assistant_text = str(cached["answer"])
+            assistant_msg = self.store.add_message(
+                conversation_id=conversation_id,
+                owner_key=owner_key,
+                role="assistant",
+                content=assistant_text,
+                meta={"cache_hit": cache_hit_tier, "cached_at": cached.get("created_at")},
+            )
+
+            return {
+                "conversation_id": conversation_id,
+                "user_message": user_msg,
+                "assistant_message": assistant_msg,
+                "cache": {"hit": True, "tier": cache_hit_tier},
+            }
+
+        llm_answer = await self._call_chat_llm(context_for_model)
+
+        assistant_msg = self.store.add_message(
+            conversation_id=conversation_id,
+            owner_key=owner_key,
+            role="assistant",
+            content=llm_answer,
+            meta={"cache_hit": None},
+        )
+
+        cache_payload = {
+            "answer": llm_answer,
+            "created_at": datetime.now().isoformat(),
+            "conversation_id": conversation_id,
+        }
+
+        await self.cache.set_chat_cache(
+            owner_key=owner_key,
+            query=content,
+            context_text=context_signature,
+            model_signature=model_signature,
+            result=cache_payload,
+            allow_public=allow_public,
+        )
+
+        return {
+            "conversation_id": conversation_id,
+            "user_message": user_msg,
+            "assistant_message": assistant_msg,
+            "cache": {"hit": False, "tier": None},
+        }
+
+    @staticmethod
+    def _build_context_signature(messages: list[dict]) -> str:
+        # 仅纳入最近 6 条消息做上下文签名，控制缓存键稳定性
+        recent = messages[-6:]
+        pairs = [f"{m.get('role', 'user')}:{(m.get('content') or '')[:220]}" for m in recent]
+        return "\n".join(pairs)
+
+    @staticmethod
+    def _build_model_messages(messages: list[dict]) -> list[dict]:
+        trimmed = messages[-10:]
+        model_messages = [
+            {
+                "role": "system",
+                "content": "你是 TechEyes 的分析助手。回答要准确、简洁、结构化，优先给出可执行建议。",
+            }
+        ]
+        for item in trimmed:
+            role = item.get("role")
+            if role not in {"user", "assistant"}:
+                continue
+            model_messages.append({"role": role, "content": item.get("content", "")})
+        return model_messages
+
+    @staticmethod
+    def _is_sensitive_query(query: str) -> bool:
+        text = (query or "").lower()
+        sensitive_keys = [
+            "我的",
+            "我账户",
+            "我的订单",
+            "手机号",
+            "身份证",
+            "银行卡",
+            "password",
+            "token",
+            "api key",
+            "private",
+            "secret",
+        ]
+        return any(key in text for key in sensitive_keys)
+
+    async def _call_chat_llm(self, messages: list[dict]) -> str:
+        if self._llm_key_invalid:
+            return "LLM_API_KEY 未正确配置（当前为占位符或空值），请在 backend/.env 中设置真实 DashScope Key 后重启后端。"
+
+        try:
+            base = (self.config.llm.base_url or "").rstrip("/")
+            url = f"{base}/chat/completions"
+            headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.config.llm.api_key}",
+            }
+            payload = {
+                "model": self.config.llm.model_id,
+                "messages": messages,
+                "temperature": self.config.llm.temperature,
+                "max_tokens": min(self.config.llm.max_tokens, 1200),
+            }
+
+            async with httpx.AsyncClient(timeout=float(self.config.llm.timeout)) as client:
+                resp = await client.post(url, json=payload, headers=headers)
+                resp.raise_for_status()
+                data = resp.json()
+
+            content = data.get("choices", [{}])[0].get("message", {}).get("content")
+            if isinstance(content, str) and content.strip():
+                return content.strip()
+
+            return "我已收到你的问题，但当前模型没有返回有效文本。请稍后再试。"
+
+        except Exception as exc:
+            if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 401:
+                logger.error("多轮对话 LLM 鉴权失败(401): 请检查 LLM_API_KEY 是否有效")
+                return "LLM 鉴权失败（401）。请检查 backend/.env 中的 LLM_API_KEY 是否为真实有效值，并重启后端。"
+            logger.error(f"多轮对话 LLM 调用失败: {exc}")
+            return "当前对话服务暂时不可用，请稍后重试。"
+
+    def delete_conversation(self, conversation_id: str, owner_key: str) -> bool:
+        """删除对话"""
+        return self.store.delete_conversation(conversation_id=conversation_id, owner_key=owner_key)
+
+    def delete_message(self, conversation_id: str, owner_key: str, turn_id: int) -> bool:
+        """删除消息"""
+        return self.store.delete_message(conversation_id=conversation_id, owner_key=owner_key, turn_id=turn_id)
+
+    def get_cache_stats(self) -> dict:
+        return self.cache.get_cache_stats()

@@ -1,0 +1,260 @@
+"""多轮对话持久化存储（PostgreSQL）"""
+
+import json
+import threading
+from datetime import datetime
+from typing import Any, Optional
+
+from sqlalchemy import text
+
+from database import engine
+
+
+class ConversationStore:
+    """基于 PostgreSQL 的会话与消息存储"""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._init_db()
+
+    def _init_db(self) -> None:
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE IF NOT EXISTS conversations (
+                        conversation_id TEXT PRIMARY KEY,
+                        owner_key TEXT NOT NULL,
+                        title TEXT,
+                        status TEXT NOT NULL DEFAULT 'active',
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    )
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE IF NOT EXISTS messages (
+                        id BIGSERIAL PRIMARY KEY,
+                        conversation_id TEXT NOT NULL,
+                        owner_key TEXT NOT NULL,
+                        turn_id INTEGER NOT NULL,
+                        role TEXT NOT NULL,
+                        content TEXT NOT NULL,
+                        meta_json TEXT,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        UNIQUE(conversation_id, turn_id)
+                    )
+                    """
+                )
+            )
+            conn.execute(text("CREATE INDEX IF NOT EXISTS idx_conv_owner_updated ON conversations(owner_key, updated_at DESC)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS idx_msg_conv_turn ON messages(conversation_id, turn_id ASC)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS idx_msg_owner ON messages(owner_key)"))
+
+    def create_conversation(self, conversation_id: str, owner_key: str, title: Optional[str] = None) -> dict:
+        now = datetime.now().isoformat()
+        safe_title = (title or "").strip()[:120] or "新对话"
+
+        with self._lock:
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        """
+                        INSERT INTO conversations (conversation_id, owner_key, title, status, created_at, updated_at)
+                        VALUES (:conversation_id, :owner_key, :title, 'active', :created_at, :updated_at)
+                        """
+                    ),
+                    {
+                        "conversation_id": conversation_id,
+                        "owner_key": owner_key,
+                        "title": safe_title,
+                        "created_at": now,
+                        "updated_at": now,
+                    },
+                )
+
+        return {
+            "conversation_id": conversation_id,
+            "owner_key": owner_key,
+            "title": safe_title,
+            "status": "active",
+            "created_at": now,
+            "updated_at": now,
+        }
+
+    def get_conversation(self, conversation_id: str, owner_key: str) -> Optional[dict]:
+        with engine.begin() as conn:
+            row = conn.execute(
+                text(
+                    """
+                    SELECT conversation_id, owner_key, title, status, created_at, updated_at
+                    FROM conversations
+                    WHERE conversation_id = :conversation_id AND owner_key = :owner_key
+                    """
+                ),
+                {"conversation_id": conversation_id, "owner_key": owner_key},
+            ).mappings().first()
+
+        if not row:
+            return None
+
+        return {
+            "conversation_id": row["conversation_id"],
+            "owner_key": row["owner_key"],
+            "title": row["title"],
+            "status": row["status"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+
+    def list_conversations(self, owner_key: str, limit: int = 50) -> list[dict]:
+        limit = max(1, min(int(limit), 200))
+
+        with engine.begin() as conn:
+            rows = conn.execute(
+                text(
+                    """
+                    SELECT c.conversation_id, c.title, c.status, c.created_at, c.updated_at,
+                           COALESCE((
+                             SELECT m.content
+                             FROM messages m
+                             WHERE m.conversation_id = c.conversation_id
+                             ORDER BY m.turn_id DESC
+                             LIMIT 1
+                           ), '') AS last_message
+                    FROM conversations c
+                    WHERE c.owner_key = :owner_key
+                    ORDER BY c.updated_at DESC
+                    LIMIT :limit
+                    """
+                ),
+                {"owner_key": owner_key, "limit": limit},
+            ).mappings().all()
+
+        return [
+            {
+                "conversation_id": row["conversation_id"],
+                "title": row["title"],
+                "status": row["status"],
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+                "last_message": row["last_message"] or "",
+            }
+            for row in rows
+        ]
+
+    def add_message(
+        self,
+        conversation_id: str,
+        owner_key: str,
+        role: str,
+        content: str,
+        meta: Optional[dict[str, Any]] = None,
+    ) -> dict:
+        role = role.strip().lower()
+        if role not in {"user", "assistant", "system"}:
+            raise ValueError("invalid role")
+
+        now = datetime.now().isoformat()
+        safe_content = (content or "").strip()
+        if not safe_content:
+            raise ValueError("empty message content")
+
+        meta_json = json.dumps(meta or {}, ensure_ascii=False)
+
+        with self._lock:
+            with engine.begin() as conn:
+                exists = conn.execute(
+                    text(
+                        "SELECT 1 FROM conversations WHERE conversation_id = :conversation_id AND owner_key = :owner_key"
+                    ),
+                    {"conversation_id": conversation_id, "owner_key": owner_key},
+                ).first()
+                if not exists:
+                    raise ValueError("conversation not found")
+
+                row = conn.execute(
+                    text("SELECT COALESCE(MAX(turn_id), 0) AS max_turn FROM messages WHERE conversation_id = :conversation_id"),
+                    {"conversation_id": conversation_id},
+                ).mappings().first()
+                next_turn = int((row or {}).get("max_turn") or 0) + 1
+
+                conn.execute(
+                    text(
+                        """
+                        INSERT INTO messages (
+                            conversation_id, owner_key, turn_id, role, content, meta_json, created_at
+                        ) VALUES (:conversation_id, :owner_key, :turn_id, :role, :content, :meta_json, :created_at)
+                        """
+                    ),
+                    {
+                        "conversation_id": conversation_id,
+                        "owner_key": owner_key,
+                        "turn_id": next_turn,
+                        "role": role,
+                        "content": safe_content,
+                        "meta_json": meta_json,
+                        "created_at": now,
+                    },
+                )
+                conn.execute(
+                    text("UPDATE conversations SET updated_at = :updated_at WHERE conversation_id = :conversation_id"),
+                    {"updated_at": now, "conversation_id": conversation_id},
+                )
+
+        return {
+            "conversation_id": conversation_id,
+            "turn_id": next_turn,
+            "role": role,
+            "content": safe_content,
+            "meta": meta or {},
+            "created_at": now,
+        }
+
+    def list_messages(self, conversation_id: str, owner_key: str, limit: int = 100) -> list[dict]:
+        limit = max(1, min(int(limit), 500))
+
+        with engine.begin() as conn:
+            exists = conn.execute(
+                text(
+                    "SELECT 1 FROM conversations WHERE conversation_id = :conversation_id AND owner_key = :owner_key"
+                ),
+                {"conversation_id": conversation_id, "owner_key": owner_key},
+            ).first()
+            if not exists:
+                return []
+
+            rows = conn.execute(
+                text(
+                    """
+                    SELECT turn_id, role, content, meta_json, created_at
+                    FROM messages
+                    WHERE conversation_id = :conversation_id AND owner_key = :owner_key
+                    ORDER BY turn_id DESC
+                    LIMIT :limit
+                    """
+                ),
+                {"conversation_id": conversation_id, "owner_key": owner_key, "limit": limit},
+            ).mappings().all()
+
+        ordered = list(reversed(rows))
+        result: list[dict] = []
+        for row in ordered:
+            try:
+                meta = json.loads(row["meta_json"]) if row["meta_json"] else {}
+            except json.JSONDecodeError:
+                meta = {}
+
+            result.append(
+                {
+                    "turn_id": row["turn_id"],
+                    "role": row["role"],
+                    "content": row["content"],
+                    "meta": meta,
+                    "created_at": row["created_at"],
+                }
+            )
+        return result

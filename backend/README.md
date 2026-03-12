@@ -1,0 +1,68 @@
+# TechEyes Backend - 快速启动指南
+
+## 🚀 启动后端
+
+```bash
+cd backend
+./start.sh
+```
+
+或者手动启动：
+```bash
+cd backend
+conda activate techeyes
+python main.py
+```
+
+## 🛑 停止后端
+
+```bash
+cd backend
+./stop.sh
+```
+
+或者手动停止：
+```bash
+lsof -ti:8000 | xargs kill -9
+```
+
+## ℹ️ 注意事项
+
+- **Redis**: 非必需，未启动会自动使用内存缓存
+- **PostgreSQL**: 非必需，当前使用内存存储
+- **LLM API**: 必需，需在 `.env` 中配置 `LLM_API_KEY`
+- **搜索工具**: 可选，配置 `TAVILY_API_KEY` 或 `SERPAPI_API_KEY` 获得更好的搜索结果
+
+## 📋 环境配置
+
+复制 `.env.example` 为 `.env` 并填入你的API密钥：
+```bash
+cp .env.example .env
+# 然后编辑 .env 文件
+```
+
+最小配置示例：
+```bash
+LLM_PROVIDER=openai
+LLM_API_KEY=your_api_key_here
+LLM_MODEL_ID=gpt-3.5-turbo
+```
+
+## 🔍 检查状态
+
+```bash
+curl http://localhost:8000/health
+```
+
+## 🐛 常见问题
+
+**Q: 端口8000被占用？**
+```bash
+./stop.sh
+```
+
+**Q: Redis连接失败？**
+不影响使用，系统会自动切换到内存缓存。
+
+**Q: 数据库连接失败？**
+不影响使用，当前MVP版本不依赖数据库。
