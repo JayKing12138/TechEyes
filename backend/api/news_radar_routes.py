@@ -9,6 +9,7 @@ from io import BytesIO
 from pydantic import BaseModel, Field
 
 from services.news_radar_service import news_radar_service
+from services.news_radar_skills import news_radar_skills_service
 from services.news_trend_analyzer import trend_analyzer
 from services.auth_service import get_current_user
 
@@ -80,6 +81,23 @@ class ReportResponse(BaseModel):
     related_searches: list
     report_markdown: Optional[str] = None
     generated_at: str
+
+
+class RadarSkillExecuteRequest(BaseModel):
+    skill: str = Field(min_length=1, description="技能名称")
+    args: dict = Field(default_factory=dict, description="技能输入参数")
+
+
+class RadarWorkflowRequest(BaseModel):
+    query: Optional[str] = Field(default=None, description="可选：先按关键词抓取并入库")
+    hot_limit: int = Field(default=10, ge=1, le=50)
+    ingest_limit: int = Field(default=10, ge=1, le=30)
+    force_refresh: bool = Field(default=False, description="是否先刷新热榜")
+    news_id: Optional[str] = Field(default=None, description="指定目标新闻ID，不填则使用热榜第一条")
+    entities: Optional[List[str]] = Field(default=None, description="指定分析实体")
+    analysis_question: Optional[str] = Field(default=None, description="按图索骥分析问题")
+    followup_question: Optional[str] = Field(default=None, description="可选追问")
+    generate_report: bool = Field(default=True, description="是否在流程末尾生成报告")
 
 
 @router.get("/hot", response_model=HotNewsResponse)
@@ -338,5 +356,55 @@ async def refresh_hot_news(
     except Exception as e:
         logger.error(f"刷新热榜失败: {e}")
         raise HTTPException(status_code=500, detail=f"刷新失败: {str(e)}")
+
+
+@router.get("/skills")
+async def list_radar_skills():
+    """列出科技新闻雷达模块可用技能。"""
+    skills = news_radar_skills_service.list_skills()
+    return {
+        "items": skills,
+        "count": len(skills),
+    }
+
+
+@router.post("/skills/execute")
+async def execute_radar_skill(
+    payload: RadarSkillExecuteRequest,
+    current_user: Optional[dict] = Depends(get_current_user),
+):
+    """执行单个科技新闻雷达技能。"""
+    try:
+        result = await news_radar_skills_service.execute_skill(
+            skill_name=payload.skill,
+            args=payload.args,
+            user_id=current_user["id"] if current_user else None,
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"执行雷达技能失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="执行雷达技能失败")
+
+
+@router.post("/skills/workflow")
+async def run_radar_skill_workflow(
+    payload: RadarWorkflowRequest,
+    current_user: Optional[dict] = Depends(get_current_user),
+):
+    """一键执行新闻雷达技能全流程。"""
+    try:
+        result = await news_radar_skills_service.execute_skill(
+            skill_name="run_full_workflow",
+            args=payload.model_dump(),
+            user_id=current_user["id"] if current_user else None,
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"执行雷达全流程失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="执行雷达全流程失败")
 
 

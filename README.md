@@ -261,6 +261,28 @@ ResultPage 展示
   6. 分布式部署
   7. 用户认证和个人化历史记录
 
+  ---
+
+  🧩 科技新闻雷达 Skills（新增）
+
+  后端新增了新闻雷达技能层，可将第三模块能力按技能方式复用和编排。
+
+  - 技能清单：`GET /api/radar/skills`
+  - 执行单技能：`POST /api/radar/skills/execute`
+  - 执行完整流程：`POST /api/radar/skills/workflow`
+
+  已实现技能：
+
+  1. `refresh_hot_news`
+  2. `get_hot_news`
+  3. `get_news_detail`
+  4. `analyze_entities`
+  5. `followup`
+  6. `generate_report`
+  7. `run_full_workflow`
+
+  详细调用示例见：`backend/NEWS_RADAR_SKILLS.md`
+
 ---
 
 📝 开发建议
