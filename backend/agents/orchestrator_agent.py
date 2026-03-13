@@ -1,8 +1,8 @@
 """协调 Agent - 负责任务分解"""
 
-from .base import SimpleBaseAgent
+from .base import ReActBaseAgent
 
-class OrchestratorAgent(SimpleBaseAgent):
+class OrchestratorAgent(ReActBaseAgent):
     """协调 Agent - 分解复杂任务为子任务"""
     
     def __init__(self):

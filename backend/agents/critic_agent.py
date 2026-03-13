@@ -1,8 +1,8 @@
 """批评 Agent - 负责质量审查"""
 
-from .base import SimpleBaseAgent
+from .base import ReActBaseAgent
 
-class CriticAgent(SimpleBaseAgent):
+class CriticAgent(ReActBaseAgent):
     """批评 Agent - 质量审查和事实核实"""
     
     def __init__(self):

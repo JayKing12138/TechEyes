@@ -3,13 +3,18 @@
 import os
 import json
 import re
+import logging
 from pathlib import Path
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Tuple
 from datetime import datetime
 from loguru import logger
 import httpx
 
+# 关闭 Chroma telemetry，并抑制 telemetry 组件的 ERROR 噪音日志。
 os.environ.setdefault("ANONYMIZED_TELEMETRY", "False")
+os.environ.setdefault("CHROMA_TELEMETRY_DISABLED", "1")
+logging.getLogger("chromadb.telemetry.product.posthog").setLevel(logging.CRITICAL)
+logging.getLogger("posthog").setLevel(logging.CRITICAL)
 
 import chromadb
 from chromadb.config import Settings
@@ -38,7 +43,7 @@ class DocumentService:
         self.upload_dir.mkdir(parents=True, exist_ok=True)
         self.chroma_dir = Path(self.config.app.chroma_path)
         self.chroma_dir.mkdir(parents=True, exist_ok=True)
-        self.chunk_size = 800  # 每个 chunk 大约 800 字符
+        self.chunk_size = 800  # 基础分块大小（会结合标题级别动态调整）
         self.chunk_overlap = 200  # chunk 之间重叠 200 字符
         self.embedding_model = "text-embedding-v4"
         self.chroma_client = chromadb.PersistentClient(
@@ -192,37 +197,191 @@ class DocumentService:
             logger.error(f"[DocService] DOCX 解析失败: {e}")
             return ""
     
-    def _split_into_chunks(self, text: str) -> List[str]:
-        """将文本分块"""
-        # 清理文本
-        text = re.sub(r'\s+', ' ', text)
+    def _normalize_text_for_chunking(self, text: str) -> str:
+        """标准化文本，尽量保留结构信息（换行/段落）。"""
+        if not text:
+            return ""
+
+        normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+        lines = [re.sub(r"[\t\f\v ]+", " ", line).strip() for line in normalized.split("\n")]
+
+        compact_lines = []
+        blank_count = 0
+        for line in lines:
+            if not line:
+                blank_count += 1
+                if blank_count <= 1:
+                    compact_lines.append("")
+            else:
+                blank_count = 0
+                compact_lines.append(line)
+
+        return "\n".join(compact_lines).strip()
+
+    def _detect_heading(self, line: str) -> Optional[Tuple[int, str]]:
+        """识别标题并返回 (level, heading_text)。"""
+        if not line:
+            return None
+
+        text_line = line.strip()
+        if len(text_line) < 2 or len(text_line) > 120:
+            return None
+
+        # Markdown 标题: # / ## / ###
+        m = re.match(r"^(#{1,6})\s+(.+)$", text_line)
+        if m:
+            return len(m.group(1)), m.group(2).strip()
+
+        # 中文章/节标题: 第1章 / 第一章 / 第三节
+        m = re.match(r"^第[一二三四五六七八九十百千\d]+[章节部分篇]\s*(.+)?$", text_line)
+        if m:
+            return 1, text_line
+
+        # 中文序号标题: 一、xx
+        m = re.match(r"^[一二三四五六七八九十]+[、.．]\s+(.+)$", text_line)
+        if m:
+            return 1, text_line
+
+        # 圆括号序号标题: (一) xx / （1）xx
+        m = re.match(r"^[（(][一二三四五六七八九十\d]+[)）]\s+(.+)$", text_line)
+        if m:
+            return 2, text_line
+
+        # 阿拉伯数字层级标题: 1. / 1.2 / 1.2.3
+        m = re.match(r"^(\d+(?:\.\d+){0,3})[)）.、\-:\s]+(.+)$", text_line)
+        if m:
+            depth = m.group(1).count(".") + 1
+            return min(depth, 4), text_line
+
+        return None
+
+    def _split_into_sections(self, text: str) -> List[Dict]:
+        """按标题层级拆成 section。"""
+        sections: List[Dict] = []
+        current = {"heading": "", "level": 0, "lines": []}
+
+        for raw_line in text.split("\n"):
+            heading = self._detect_heading(raw_line)
+            if heading:
+                if current["heading"] or current["lines"]:
+                    sections.append(
+                        {
+                            "heading": current["heading"],
+                            "level": current["level"],
+                            "content": "\n".join(current["lines"]).strip(),
+                        }
+                    )
+                level, heading_text = heading
+                current = {"heading": heading_text, "level": level, "lines": []}
+            else:
+                current["lines"].append(raw_line)
+
+        if current["heading"] or current["lines"]:
+            sections.append(
+                {
+                    "heading": current["heading"],
+                    "level": current["level"],
+                    "content": "\n".join(current["lines"]).strip(),
+                }
+            )
+
+        return sections
+
+    def _get_dynamic_chunk_size(self, heading_level: int, section_len: int) -> int:
+        """根据标题级别和 section 长度动态调整 chunk 大小。"""
+        base = self.chunk_size
+
+        if heading_level <= 1:
+            target = int(base * 0.9)  # 一级标题更细粒度
+        elif heading_level == 2:
+            target = base
+        elif heading_level >= 3:
+            target = int(base * 1.1)  # 深层小节可稍大，减少碎片化
+        else:
+            target = base
+
+        if section_len > base * 4 and heading_level <= 2:
+            target = int(target * 0.9)
+
+        return max(400, min(1400, target))
+
+    def _split_text_windowed(self, text: str, target_size: int, overlap: int) -> List[str]:
+        """窗口切分：优先段落/句子边界，保留 overlap。"""
         text = text.strip()
-        
-        if len(text) <= self.chunk_size:
+        if not text:
+            return []
+        if len(text) <= target_size:
             return [text]
-        
-        chunks = []
+
+        chunks: List[str] = []
         start = 0
-        
-        while start < len(text):
-            end = start + self.chunk_size
-            
-            # 如果不是最后一块，尝试在句子边界处分割
-            if end < len(text):
-                # 寻找句号、问号、感叹号等
-                for sep in ['。', '！', '？', '.', '!', '?', '\n\n', '\n']:
-                    pos = text.rfind(sep, start, end)
-                    if pos > start + self.chunk_size // 2:  # 至少要有一半长度
-                        end = pos + 1
-                        break
-            
+        n = len(text)
+
+        while start < n:
+            end = min(start + target_size, n)
+
+            if end < n:
+                best_cut = -1
+                # 优先在更自然的边界切分
+                for sep in ["\n\n", "\n", "。", "！", "？", ". ", "! ", "? ", "；", ";", "，", ","]:
+                    pos = text.rfind(sep, start + target_size // 2, end)
+                    if pos > best_cut:
+                        best_cut = pos + len(sep)
+                if best_cut > start + target_size // 2:
+                    end = best_cut
+
             chunk = text[start:end].strip()
             if chunk:
                 chunks.append(chunk)
-            
-            # 下一个块从重叠位置开始
-            start = end - self.chunk_overlap if end < len(text) else end
-        
+
+            if end >= n:
+                break
+
+            next_start = max(end - overlap, start + 1)
+            start = next_start if next_start > start else end
+
+        return chunks
+
+    def _split_into_chunks(self, text: str) -> List[str]:
+        """高级分块：标题感知 + 动态长度 + 重叠窗口。"""
+        normalized = self._normalize_text_for_chunking(text)
+        if not normalized:
+            return []
+
+        sections = self._split_into_sections(normalized)
+        chunks: List[str] = []
+
+        for section in sections:
+            heading = section.get("heading", "").strip()
+            level = int(section.get("level", 0) or 0)
+            content = section.get("content", "").strip()
+
+            # 纯标题也保留，避免目录信息丢失
+            if heading and not content:
+                chunks.append(f"[H{level}] {heading}")
+                continue
+
+            section_text = content if content else heading
+            if not section_text:
+                continue
+
+            target_size = self._get_dynamic_chunk_size(level, len(section_text))
+            split_parts = self._split_text_windowed(section_text, target_size, self.chunk_overlap)
+
+            for idx, part in enumerate(split_parts):
+                if heading:
+                    title_prefix = f"[H{level}] {heading}"
+                    chunk = f"{title_prefix}\n{part}" if idx == 0 else f"{title_prefix}（续）\n{part}"
+                else:
+                    chunk = part
+
+                if len(chunk.strip()) >= 20:
+                    chunks.append(chunk.strip())
+
+        if not chunks:
+            fallback = normalized[: self.chunk_size].strip()
+            return [fallback] if fallback else []
+
         return chunks
     
     async def _embed_text(self, text: str) -> Optional[List[float]]:

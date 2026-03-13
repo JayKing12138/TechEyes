@@ -3,7 +3,7 @@
 import json
 from typing import Dict
 from loguru import logger
-from hello_agents import SimpleAgent, HelloAgentsLLM
+from hello_agents import ReActAgent, HelloAgentsLLM
 from config import get_config
 
 
@@ -19,10 +19,11 @@ class RouterAgent:
             provider=config.llm.provider
         )
         
-        self.agent = SimpleAgent(
+        self.agent = ReActAgent(
             name="RouterAgent",
             llm=self.llm,
-            system_prompt=self._get_system_prompt()
+            system_prompt=self._get_system_prompt(),
+            max_steps=4,
         )
     
     def _get_system_prompt(self) -> str:

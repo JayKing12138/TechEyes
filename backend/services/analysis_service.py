@@ -2,12 +2,18 @@
 
 import asyncio
 import json
+import re
 from datetime import datetime
 from typing import AsyncGenerator, Optional
 from loguru import logger
 import httpx
 
 from config import get_config
+from agents.orchestrator_agent import OrchestratorAgent
+from agents.researcher_agent import ResearcherAgent
+from agents.analyzer_agent import AnalyzerAgent
+from agents.synthesizer_agent import SynthesizerAgent
+from agents.critic_agent import CriticAgent
 from services.history_store import HistoryStore
 from tools.search_tools import TavilyTool, SERPAPITool
 
@@ -19,6 +25,13 @@ class AnalysisService:
     def __init__(self):
         self.sessions = {}
         self.history_store = HistoryStore()
+
+        # ReAct 多Agent工作流
+        self.orchestrator_agent = OrchestratorAgent()
+        self.researcher_agent = ResearcherAgent()
+        self.analyzer_agent = AnalyzerAgent()
+        self.synthesizer_agent = SynthesizerAgent()
+        self.critic_agent = CriticAgent()
         
         # 初始化搜索工具（主+备用）
         self.primary_search = TavilyTool() if config.search.tavily_api_key else SERPAPITool()
@@ -27,6 +40,39 @@ class AnalysisService:
     @staticmethod
     def _tool_name(tool) -> str:
         return tool.__class__.__name__ if tool else "None"
+
+    @staticmethod
+    def _extract_json_block(raw_text: str) -> Optional[dict]:
+        """从模型输出中尽力提取 JSON 对象。"""
+        text = (raw_text or "").strip()
+        if not text:
+            return None
+
+        if "```json" in text:
+            try:
+                text = text.split("```json", 1)[1].split("```", 1)[0].strip()
+            except Exception:
+                pass
+        elif "```" in text:
+            try:
+                text = text.split("```", 1)[1].split("```", 1)[0].strip()
+            except Exception:
+                pass
+
+        try:
+            obj = json.loads(text)
+            return obj if isinstance(obj, dict) else None
+        except Exception:
+            pass
+
+        match = re.search(r"\{[\s\S]*\}", text)
+        if not match:
+            return None
+        try:
+            obj = json.loads(match.group(0))
+            return obj if isinstance(obj, dict) else None
+        except Exception:
+            return None
     
     async def analyze(self, session_id: str, request, owner_key: str):
         """执行完整的分析流程 - MVP版本"""
@@ -48,9 +94,19 @@ class AnalysisService:
             logger.info(f"[{session_id}] 开始分析：{request.query}")
             logger.info(f"[{session_id}] [MCP] 当前分析流程未接入 MCP 远程工具，使用本地 Tool 类执行")
             
-            # 步骤 1：搜索相关信息
-            logger.info(f"[{session_id}] 步骤 1/3：搜索信息")
-            self.sessions[session_id]["progress"] = 20
+            # 步骤 1：任务分解（ReAct-Orchestrator）
+            logger.info(f"[{session_id}] 步骤 1/5：任务分解（ReAct）")
+            self.sessions[session_id]["progress"] = 15
+            self.sessions[session_id]["steps"].append("正在进行任务分解（ReAct）...")
+
+            decompose_raw = await self.orchestrator_agent.decompose_task(request.query)
+            decompose_result = self._extract_json_block(decompose_raw) or {}
+            focus_companies = request.focus_companies or decompose_result.get("analysis_focus") or []
+            subtasks = decompose_result.get("subtasks") or []
+
+            # 步骤 2：搜索相关信息
+            logger.info(f"[{session_id}] 步骤 2/5：搜索信息")
+            self.sessions[session_id]["progress"] = 30
             self.sessions[session_id]["steps"].append("正在搜索相关信息...")
             
             logger.info(
@@ -75,31 +131,70 @@ class AnalysisService:
                 logger.error(f"[{session_id}] 所有搜索源均失败")
                 raise RuntimeError("搜索失败：所有搜索源均不可用，请检查 TAVILY/SERPAPI 配置")
             
-            # 步骤 2：LLM 分析
-            logger.info(f"[{session_id}] 步骤 2/3：AI 分析")
-            self.sessions[session_id]["progress"] = 60
-            self.sessions[session_id]["steps"].append("正在进行 AI 分析...")
-            
-            logger.info(f"[{session_id}] [FunctionCall] AnalysisService._call_llm_analysis(search_results={len(search_results)})")
-            analysis_result = await self._call_llm_analysis(request.query, search_results)
-            logger.info(f"[{session_id}] [FunctionReturn] AnalysisService._call_llm_analysis -> keys={list(analysis_result.keys())}")
-            
-            # 步骤 3：构建最终结果
-            logger.info(f"[{session_id}] 步骤 3/3：生成报告")
+            # 步骤 3：研究与分析（ReAct-Researcher/Analyzer）
+            logger.info(f"[{session_id}] 步骤 3/5：研究与分析（ReAct）")
+            self.sessions[session_id]["progress"] = 55
+            self.sessions[session_id]["steps"].append("正在进行研究与分析（ReAct）...")
+
+            subtask_text = "\n".join(
+                f"- {t.get('name') or t.get('id')}: {t.get('description', '')}" for t in subtasks[:6] if isinstance(t, dict)
+            )
+            enriched_query = request.query
+            if subtask_text:
+                enriched_query += f"\n\n子任务上下文:\n{subtask_text}"
+
+            research_result = await self.researcher_agent.research(
+                enriched_query,
+                focus_companies=focus_companies,
+            )
+            analysis_result_text = await self.analyzer_agent.analyze(
+                request.query,
+                focus_companies=focus_companies,
+            )
+
+            # 步骤 4：质量审查（ReAct-Critic）
+            logger.info(f"[{session_id}] 步骤 4/5：质量审查（ReAct）")
+            self.sessions[session_id]["progress"] = 75
+            self.sessions[session_id]["steps"].append("正在执行质量审查（ReAct）...")
+
+            review_result = await self.critic_agent.review(
+                research_result=research_result,
+                analysis_result=analysis_result_text,
+            )
+
+            # 步骤 5：综合生成（ReAct-Synthesizer）
+            logger.info(f"[{session_id}] 步骤 5/5：综合生成（ReAct）")
             self.sessions[session_id]["progress"] = 90
-            self.sessions[session_id]["steps"].append("正在生成报告...")
-            
+            self.sessions[session_id]["steps"].append("正在综合生成最终报告（ReAct）...")
+
+            synthesis_raw = await self.synthesizer_agent.synthesize(
+                query=request.query,
+                research=research_result,
+                analysis=analysis_result_text,
+                review=review_result,
+                depth=request.analysis_depth,
+                include_future=request.include_future_prediction,
+            )
+            synthesis_json = self._extract_json_block(synthesis_raw)
+
+            if not synthesis_json:
+                logger.warning(f"[{session_id}] ReAct 综合结果未返回有效 JSON，回退到传统 LLM 结构化生成")
+                synthesis_json = await self._call_llm_analysis(request.query, search_results)
+
             final_result = {
                 "query": request.query,
-                "summary": analysis_result.get("summary", "分析完成"),
-                "timeline": analysis_result.get("timeline", []),
-                "comparisons": analysis_result.get("comparisons", []),
-                "futureOutlook": analysis_result.get("futureOutlook", ""),
+                "summary": synthesis_json.get("summary", "分析完成"),
+                "timeline": synthesis_json.get("timeline", []),
+                "comparisons": synthesis_json.get("comparisons", []),
+                "futureOutlook": synthesis_json.get("futureOutlook", ""),
                 "sources": [{"title": r["title"], "url": r.get("url", "")} for r in search_results],
                 "metadata": {
                     "analyzed_at": datetime.now().isoformat(),
                     "session_id": session_id,
-                    "search_results_count": len(search_results)
+                    "search_results_count": len(search_results),
+                    "agent_mode": "react",
+                    "focus_companies": focus_companies,
+                    "subtask_count": len(subtasks),
                 }
             }
             

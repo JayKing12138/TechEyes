@@ -6,8 +6,13 @@ from loguru import logger
 from rank_bm25 import BM25Okapi
 from collections import defaultdict
 import os
+import logging
 
+# 关闭 Chroma telemetry，并抑制 telemetry 组件的 ERROR 噪音日志。
 os.environ.setdefault("ANONYMIZED_TELEMETRY", "False")
+os.environ.setdefault("CHROMA_TELEMETRY_DISABLED", "1")
+logging.getLogger("chromadb.telemetry.product.posthog").setLevel(logging.CRITICAL)
+logging.getLogger("posthog").setLevel(logging.CRITICAL)
 
 import chromadb
 from chromadb.config import Settings

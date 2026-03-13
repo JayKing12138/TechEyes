@@ -54,6 +54,31 @@ LLM_MODEL_ID=gpt-3.5-turbo
 curl http://localhost:8000/health
 ```
 
+## 🧪 RAG 自动化评测（项目知识工作台）
+
+支持三类指标：
+
+- 检索阶段：`Hit@K`、`Recall@K`、`MRR@K`、`NDCG@K`
+- 生成阶段：`accuracy`、`completeness`、`faithfulness`
+- 端到端：`task_success_rate`、`latency(avg/p50/p95)`、`cache_hit_rate`
+
+运行示例：
+
+```bash
+cd backend
+python scripts/evaluate_project_rag.py \
+  --dataset scripts/rag_eval_dataset.sample.jsonl \
+  --output logs/rag_eval_report.json \
+  --use-llm-judge \
+  --invalidate-before-each
+```
+
+说明：
+
+- 数据集为 JSONL，每行一个样本，必填字段：`project_id`、`question`
+- 推荐提供 `expected_chunk_ids`、`reference_answer`、`required_facts` 以获得完整评测
+- `--invalidate-before-each` 可减少缓存对延迟与成功率统计的干扰
+
 ## 🐛 常见问题
 
 **Q: 端口8000被占用？**

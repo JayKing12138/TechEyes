@@ -5,7 +5,6 @@ const API_BASE = '/api'
 
 const api = axios.create({
   baseURL: API_BASE,
-  timeout: 60000,
 })
 
 const TOKEN_KEY = 'techeyes_auth_token'

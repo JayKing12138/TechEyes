@@ -50,19 +50,16 @@ class ProjectRAGService:
         )
         return f"{turns} | question: {question}"
 
-    async def invalidate_project_cache(self, project_id: int) -> int:
-        """文档上传/删除后，清除 Redis L2 中该项目的所有 KV 缓存条目。"""
-        deleted = 0
-        if self.kv_cache.redis_client:
-            try:
-                pattern = f"chat:v1:private:project:{project_id}:*"
-                keys = self.kv_cache.redis_client.keys(pattern)
-                if keys:
-                    deleted = self.kv_cache.redis_client.delete(*keys)
-                logger.info(f"[KVCache] 项目 {project_id} 缓存失效：删除 {deleted} 条 Redis 条目")
-            except Exception as exc:
-                logger.warning(f"[KVCache] 缓存失效失败: {exc}")
-        return deleted
+    async def invalidate_project_cache(self, project_id: int) -> dict:
+        """文档上传/删除后清理项目缓存（L1/L2/L3 全层失效）。"""
+        owner_key = self._build_owner_key(project_id)
+        try:
+            stats = await self.kv_cache.invalidate_chat_cache_by_owner(owner_key)
+            logger.info(f"[KVCache] 项目 {project_id} 缓存失效完成: {stats}")
+            return stats
+        except Exception as exc:
+            logger.warning(f"[KVCache] 项目 {project_id} 缓存失效失败: {exc}")
+            return {"owner_key": owner_key, "l1_deleted": 0, "l2_deleted": 0, "l3_deleted": 0}
 
     # -------------------- 主流程 --------------------
 

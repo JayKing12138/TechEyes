@@ -1,8 +1,8 @@
 """综合 Agent - 负责结果融合"""
 
-from .base import SimpleBaseAgent
+from .base import ReActBaseAgent
 
-class SynthesizerAgent(SimpleBaseAgent):
+class SynthesizerAgent(ReActBaseAgent):
     """综合 Agent - 融合多个 Agent 的结果"""
     
     def __init__(self):

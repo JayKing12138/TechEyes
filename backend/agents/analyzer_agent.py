@@ -1,8 +1,8 @@
 """分析 Agent - 负责数据分析"""
 
-from .base import SimpleBaseAgent
+from .base import ReActBaseAgent
 
-class AnalyzerAgent(SimpleBaseAgent):
+class AnalyzerAgent(ReActBaseAgent):
     """分析 Agent - 处理数据分析和对比"""
     
     def __init__(self):

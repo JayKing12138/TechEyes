@@ -236,6 +236,9 @@ async def delete_project(
     
     if not success:
         raise HTTPException(status_code=404, detail="项目不存在")
+
+    # 删除项目后同步清理该项目的 KV 缓存（L1/L2/L3）
+    await project_rag_service.invalidate_project_cache(project_id)
     
     return None
 

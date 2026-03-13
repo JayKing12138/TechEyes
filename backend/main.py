@@ -12,6 +12,12 @@ import os
 import time
 import uuid
 
+# 全局关闭 Chroma telemetry，避免 posthog 兼容性报错刷 ERROR。
+os.environ.setdefault("ANONYMIZED_TELEMETRY", "False")
+os.environ.setdefault("CHROMA_TELEMETRY_DISABLED", "1")
+logging.getLogger("chromadb.telemetry.product.posthog").setLevel(logging.CRITICAL)
+logging.getLogger("posthog").setLevel(logging.CRITICAL)
+
 from config import get_config, init_directories
 from database import init_db, test_connection
 import models

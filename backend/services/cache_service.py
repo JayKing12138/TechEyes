@@ -280,6 +280,11 @@ class CacheService:
         q_hash = self._short_hash(normalized_query)
         return f"chat:v1:{scope}:{owner_key}:{model_signature}:{q_hash}:{context_hash}"
 
+    @staticmethod
+    def _chat_owner_prefix(owner_key: str, scope: str = "private") -> str:
+        """构建 owner 维度的 chat key 前缀。"""
+        return f"chat:v1:{scope}:{owner_key}:"
+
     def _get_l1(self, key: str) -> Optional[dict]:
         now = datetime.now().timestamp()
         with self._l1_lock:
@@ -528,3 +533,68 @@ class CacheService:
         except Exception as exc:
             logger.error(f"Cache clear failed: {exc}")
             return False
+
+    async def invalidate_chat_cache_by_owner(self, owner_key: str) -> dict:
+        """按 owner 失效 chat 缓存（L1/L2/L3），用于文档增删改后的一致性保障。"""
+        result = {
+            "owner_key": owner_key,
+            "l1_deleted": 0,
+            "l2_deleted": 0,
+            "l3_deleted": 0,
+        }
+        prefix = self._chat_owner_prefix(owner_key, scope="private")
+
+        # L1: 删除内存中该 owner 的所有私有聊天缓存
+        try:
+            with self._l1_lock:
+                keys_to_delete = [k for k in self._l1_cache.keys() if k.startswith(prefix)]
+                for key in keys_to_delete:
+                    self._l1_cache.pop(key, None)
+                result["l1_deleted"] = len(keys_to_delete)
+        except Exception as exc:
+            logger.warning(f"L1 owner invalidation failed owner={owner_key}: {exc}")
+
+        # L2: Redis 使用 SCAN 避免 KEYS 阻塞
+        if self.redis_client:
+            try:
+                cursor = 0
+                redis_keys = []
+                pattern = f"{prefix}*"
+                while True:
+                    cursor, keys = self.redis_client.scan(cursor=cursor, match=pattern, count=200)
+                    if keys:
+                        redis_keys.extend(keys)
+                    if cursor == 0:
+                        break
+
+                if redis_keys:
+                    result["l2_deleted"] = int(self.redis_client.delete(*redis_keys))
+            except Exception as exc:
+                logger.warning(f"L2 owner invalidation failed owner={owner_key}: {exc}")
+
+        # L3: 删除语义索引中该 owner 私有条目，避免旧指针持续参与匹配
+        try:
+            with self._semantic_lock:
+                with engine.begin() as conn:
+                    row = conn.execute(
+                        text(
+                            """
+                            DELETE FROM semantic_cache_index
+                            WHERE scope = 'private' AND owner_key = :owner_key
+                            RETURNING id
+                            """
+                        ),
+                        {"owner_key": owner_key},
+                    ).fetchall()
+            result["l3_deleted"] = len(row)
+        except Exception as exc:
+            logger.warning(f"L3 owner invalidation failed owner={owner_key}: {exc}")
+
+        logger.info(
+            "[KVCache] owner失效完成 owner=%s l1=%s l2=%s l3=%s",
+            owner_key,
+            result["l1_deleted"],
+            result["l2_deleted"],
+            result["l3_deleted"],
+        )
+        return result
