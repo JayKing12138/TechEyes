@@ -7,7 +7,7 @@ from models.user import User
 from models.project import Project, ProjectDocument, ProjectConversation
 from services.project_service import ProjectService
 from services.document_service import DocumentService
-from services.project_rag_service import ProjectRAGService
+from services.project_rag_service import project_rag_service
 from services.auth_service import get_current_user
 from pydantic import BaseModel
 from typing import List, Optional
@@ -308,14 +308,17 @@ async def upload_document(
     logger.info(f"📤 开始处理文档: {file.filename} (doc_id={document.id})")
     
     # 异步处理文档，不阻塞响应
-    asyncio.create_task(
-        doc_service.process_uploaded_file(
+    async def _process_and_invalidate():
+        await doc_service.process_uploaded_file(
             project_id=project_id,
             doc_id=document.id,
             file_content=file_content,
             filename=file.filename
         )
-    )
+        # 文档处理完成后删除项目的 KV cache，避免旧缓存污染新文档
+        await project_rag_service.invalidate_project_cache(project_id)
+
+    asyncio.create_task(_process_and_invalidate())
     
     logger.info(f"📤 文档已提交处理: {file.filename} -> project {project_id}")
     
@@ -343,6 +346,8 @@ async def delete_document(
 
     # 同步清理 Chroma 中该文档的向量索引
     DocumentService().delete_document_vectors(doc_id)
+    # 文档删除后同步删除项目 KV cache
+    await project_rag_service.invalidate_project_cache(project_id)
     
     return None
 
@@ -467,7 +472,6 @@ async def send_message(
 ):
     """发送消息（双通道RAG：项目文档 + 新闻）"""
     service = ProjectService(db)
-    rag_service = ProjectRAGService()
     
     # 验证项目权限
     project = service.get_project(project_id, user_id)
@@ -517,7 +521,7 @@ async def send_message(
     # 调用 RAG 服务生成回答
     logger.info(f"[ProjectChat] 开始 RAG 问答: project_id={project_id}, question='{req.message[:50]}...'")
     
-    rag_result = await rag_service.answer_with_rag(
+    rag_result = await project_rag_service.answer_with_rag(
         project_id=project_id,
         question=req.message,
         conversation_history=conversation_history,
@@ -555,5 +559,7 @@ async def send_message(
             "chunk_ids": rag_info.get("chunk_ids", []),
             "memory_used": rag_info.get("memory_used", False),
             "memory_count": rag_info.get("memory_count", 0),
+            "cache_hit": rag_info.get("cache_hit", False),
+            "cache_source": rag_info.get("cache_source"),
         }
     )
