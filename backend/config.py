@@ -90,6 +90,7 @@ class AgentConfig(BaseSettings):
     max_agent_steps: int = Field(default=10, alias='MAX_AGENT_STEPS')
     agent_timeout: int = Field(default=120, alias='AGENT_TIMEOUT')
     reflection_enabled: bool = Field(default=True, alias='REFLECTION_ENABLED')
+    reflection_max_loops: int = Field(default=5, alias='REFLECTION_MAX_LOOPS')
     
     @property
     def max_steps(self) -> int:
@@ -100,6 +101,11 @@ class AgentConfig(BaseSettings):
     def timeout(self) -> int:
         """别名属性"""
         return self.agent_timeout
+
+    @property
+    def max_reflection_loops(self) -> int:
+        """反思循环最大次数（兼容命名）"""
+        return self.reflection_max_loops
 
 
 class RetrievalConfig(BaseSettings):

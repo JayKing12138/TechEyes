@@ -105,101 +105,170 @@ class ProjectRAGService:
 
         try:
             logger.info(f"[ProjectRAG] Cache miss，开始处理问题: '{question[:50]}...'")
-            
-            # ========== 阶段1: 路由决策 ==========
-            routing = await self.router.route(question)
-            logger.info(f"[ProjectRAG] 路由结果: {routing}")
+            reflection_enabled = bool(getattr(self.config.agent, "reflection_enabled", True))
+            configured_max_loops = int(getattr(self.config.agent, "reflection_max_loops", 5))
+            max_reflection_loops = max(1, configured_max_loops)
+            max_attempts = max_reflection_loops if reflection_enabled else 1
 
-            intent = routing.get("intent")
-            allow_model_knowledge = bool(routing.get("allow_model_knowledge"))
-            
-            # ========== 阶段2: 问题拆解（复杂问题） ==========
-            queries = [question]
-            if routing.get("complexity") == "high":
-                queries = await self.planner.decompose(question, max_sub_queries=3)
-                logger.info(f"[ProjectRAG] 拆解为 {len(queries)} 个子查询")
-            
-            # ========== 阶段3: 并行检索 ==========
-            all_doc_chunks = []
-            all_news_sources = []
-            
-            # 3.1 文档检索
-            # 为了尽量“多用项目文档”，这里不再尊重 Router 的 need_doc=False，
-            # 而是始终尝试基于项目文档做检索；若项目本身无文档，Retriever 会自然返回空。
-            for query in queries:
-                chunks = await self.retriever.retrieve(
-                    project_id=project_id,
-                    query=query,
-                    top_k=15,  # 召回阶段多召回一些
-                )
-                all_doc_chunks.extend(chunks)
-            
-            # 去重（基于 chunk_id）
-            seen_ids = set()
-            unique_chunks = []
-            for chunk in all_doc_chunks:
-                cid = chunk.get("chunk_id")
-                if cid not in seen_ids:
-                    seen_ids.add(cid)
-                    unique_chunks.append(chunk)
-            all_doc_chunks = unique_chunks
-            
-            logger.info(f"[ProjectRAG] 文档检索: {len(all_doc_chunks)} 个候选")
-            
-            # 3.2 Web/新闻检索
-            if enable_news and routing.get("need_web", False):
-                news_sources = await self.web_news.search_web(
+            routing = {}
+            answer = ""
+            validation = {}
+            final_chunks = []
+            doc_chunks = []
+            news_sources = []
+            reflection_issues = []
+
+            for attempt in range(1, max_attempts + 1):
+                logger.info(f"[ProjectRAG] Reflection 尝试 {attempt}/{max_attempts}")
+
+                # ========== 阶段1: 路由决策 ==========
+                route_query = question
+                if reflection_issues:
+                    feedback = "；".join(reflection_issues[:3])
+                    route_query = (
+                        f"{question}\n\n"
+                        f"[上一轮 Critic 反馈]{feedback}\n"
+                        "请结合这些问题重新判断路由。"
+                    )
+                routing = await self.router.route(route_query)
+                logger.info(f"[ProjectRAG] 路由结果: {routing}")
+
+                allow_model_knowledge = bool(routing.get("allow_model_knowledge"))
+
+                # ========== 阶段2: 问题拆解（复杂问题） ==========
+                queries = [question]
+                if routing.get("complexity") == "high":
+                    queries = await self.planner.decompose(question, max_sub_queries=3)
+                    logger.info(f"[ProjectRAG] 拆解为 {len(queries)} 个子查询")
+
+                # ========== 阶段3: 并行检索 ==========
+                all_doc_chunks = []
+                all_news_sources = []
+
+                # 3.1 文档检索
+                # 为了尽量“多用项目文档”，这里不再尊重 Router 的 need_doc=False，
+                # 而是始终尝试基于项目文档做检索；若项目本身无文档，Retriever 会自然返回空。
+                for query in queries:
+                    chunks = await self.retriever.retrieve(
+                        project_id=project_id,
+                        query=query,
+                        top_k=15,  # 召回阶段多召回一些
+                    )
+                    all_doc_chunks.extend(chunks)
+
+                # 去重（基于 chunk_id）
+                seen_ids = set()
+                unique_chunks = []
+                for chunk in all_doc_chunks:
+                    cid = chunk.get("chunk_id")
+                    if cid not in seen_ids:
+                        seen_ids.add(cid)
+                        unique_chunks.append(chunk)
+                all_doc_chunks = unique_chunks
+
+                logger.info(f"[ProjectRAG] 文档检索: {len(all_doc_chunks)} 个候选")
+
+                # 3.2 Web/新闻检索
+                if enable_news and routing.get("need_web", False):
+                    fetched_news = await self.web_news.search_web(
+                        query=question,
+                        max_results=5,
+                        force_search=True,
+                        enable_domain_filter=False  # 开发阶段不过滤域名
+                    )
+                    all_news_sources = fetched_news
+                    logger.info(f"[ProjectRAG] 新闻检索: {len(all_news_sources)} 个来源")
+
+                # ========== 阶段4: 统一精排 ==========
+                # 合并所有候选
+                all_candidates = all_doc_chunks + all_news_sources
+
+                final_chunks = await self.reranker.rerank(
                     query=question,
-                    max_results=5,
-                    force_search=True,
-                    enable_domain_filter=False  # 开发阶段不过滤域名
+                    candidates=all_candidates,
+                    top_k=5,
+                    enable_diversity=True,
+                    max_per_doc=2
                 )
-                all_news_sources = news_sources
-                logger.info(f"[ProjectRAG] 新闻检索: {len(all_news_sources)} 个来源")
-            
-            # ========== 阶段4: 统一精排 ==========
-            # 合并所有候选
-            all_candidates = all_doc_chunks + all_news_sources
-            
-            final_chunks = await self.reranker.rerank(
-                query=question,
-                candidates=all_candidates,
-                top_k=5,
-                enable_diversity=True,
-                max_per_doc=2
-            )
-            
-            logger.info(f"[ProjectRAG] 精排完成: {len(final_chunks)} 个精选证据")
-            
-            # ========== 阶段5: 生成回答 ==========
-            # 分离文档和新闻
-            doc_chunks = [c for c in final_chunks if c.get("retrieval_method") != "news"]
-            news_sources = [c for c in final_chunks if c.get("retrieval_method") == "news"]
-            
-            answer = await self.synthesizer.synthesize(
-                query=question,
-                doc_chunks=doc_chunks,
-                news_sources=news_sources,
-                conversation_history=conversation_history or [],
-                project_memories=project_memories or [],
-                allow_model_knowledge=allow_model_knowledge,
-            )
-            
-            logger.info("[ProjectRAG] 回答生成完成")
-            
-            # ========== 阶段6: 质量校验 ==========
-            # 保留 Critic 仅作“诊断与打分”，不再干预最终回答内容，
-            # 以保证用户总能拿到完整回答。
-            validation = await self.critic.validate(
-                query=question,
-                answer=answer,
-                evidence_chunks=final_chunks,
-            )
-            logger.info(
-                f"[ProjectRAG] 质量校验: valid={validation.get('valid')}, "
-                f"hallucination={validation.get('hallucination')}, "
-                f"sufficient={validation.get('sufficient')}"
-            )
+
+                logger.info(f"[ProjectRAG] 精排完成: {len(final_chunks)} 个精选证据")
+
+                # ========== 阶段5: 生成回答 ==========
+                # 分离文档和新闻
+                doc_chunks = [c for c in final_chunks if c.get("retrieval_method") != "news"]
+                news_sources = [c for c in final_chunks if c.get("retrieval_method") == "news"]
+
+                answer = await self.synthesizer.synthesize(
+                    query=question,
+                    doc_chunks=doc_chunks,
+                    news_sources=news_sources,
+                    conversation_history=conversation_history or [],
+                    project_memories=project_memories or [],
+                    allow_model_knowledge=allow_model_knowledge,
+                )
+
+                logger.info("[ProjectRAG] 回答生成完成")
+
+                # ========== 阶段6: 质量校验 ==========
+                validation = await self.critic.validate(
+                    query=question,
+                    answer=answer,
+                    evidence_chunks=final_chunks,
+                )
+                logger.info(
+                    f"[ProjectRAG] 质量校验: valid={validation.get('valid')}, "
+                    f"hallucination={validation.get('hallucination')}, "
+                    f"sufficient={validation.get('sufficient')}"
+                )
+
+                if validation.get("valid", False):
+                    logger.info(f"[ProjectRAG] Reflection 成功，尝试轮次: {attempt}")
+                    break
+
+                reflection_issues = validation.get("issues") or ["质量校验未通过"]
+                logger.warning(
+                    f"[ProjectRAG] Reflection 失败，准备回退到 Router 重试。"
+                    f" attempt={attempt}/{max_attempts}, issues={reflection_issues}"
+                )
+
+            if not validation.get("valid", False):
+                failure_answer = (
+                    f"抱歉，我已尝试 {max_attempts} 次仍未通过质量校验，"
+                    "当前无法给出可靠答案。请补充更具体的问题或上传更多相关文档后重试。"
+                )
+                return {
+                    "answer": failure_answer,
+                    "doc_chunks": [],
+                    "news_sources": [],
+                    "rag_info": {
+                        "used": True,
+                        "doc_used": False,
+                        "news_used": False,
+                        "doc_count": 0,
+                        "news_count": 0,
+                        "doc_ids": [],
+                        "chunk_ids": [],
+                        "memory_used": bool(project_memories),
+                        "memory_count": len(project_memories or []),
+                        "routing": routing,
+                        "validation": validation,
+                        "cache_hit": False,
+                        "reflection": {
+                            "enabled": reflection_enabled,
+                            "max_loops": max_attempts,
+                            "status": "failed"
+                        },
+                        "agent_workflow": {
+                            "router": True,
+                            "planner": routing.get("complexity") == "high",
+                            "retriever": routing.get("need_doc", True),
+                            "web_news": routing.get("need_web", False),
+                            "reranker": True,
+                            "synthesizer": True,
+                            "critic": True
+                        }
+                    }
+                }
             
             # ========== 返回结果 ==========
             result = {
@@ -219,6 +288,11 @@ class ProjectRAGService:
                     "routing": routing,
                     "validation": validation,
                     "cache_hit": False,
+                    "reflection": {
+                        "enabled": reflection_enabled,
+                        "max_loops": max_attempts,
+                        "status": "passed"
+                    },
                     "agent_workflow": {
                         "router": True,
                         "planner": routing.get("complexity") == "high",
