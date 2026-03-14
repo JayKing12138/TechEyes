@@ -61,6 +61,31 @@ class NewsRadarService:
         self.last_search_time: Dict[str, datetime] = {}
         self.search_interval_hours = 1  # 搜索间隔：1小时
 
+    # -------------------- cache helpers --------------------
+
+    @staticmethod
+    def _short_hash(value: str) -> str:
+        return hashlib.md5((value or "").encode("utf-8")).hexdigest()[:16]
+
+    def _build_radar_cache_key(
+        self,
+        kind: str,
+        news_id: str,
+        entities: List[str],
+        question: str,
+        extra_context: str = "",
+    ) -> str:
+        # 精准匹配：只使用请求原始参数生成稳定键，不做别名/扩展映射
+        exact_entities = "|".join(sorted((x or "").strip() for x in entities if (x or "").strip()))
+        material = "\n".join([
+            kind,
+            news_id or "",
+            exact_entities,
+            (question or "").strip(),
+            (extra_context or "").strip(),
+        ])
+        return f"{kind}:{self._short_hash(material)}"
+
     # -------------------- public API --------------------
 
     async def get_hot_news(self, limit: int = 20, force_refresh: bool = False) -> List[Dict[str, Any]]:
@@ -492,6 +517,28 @@ class NewsRadarService:
         if not entity_names:
             raise ValueError("至少需要一个实体名称")
 
+        question = user_question or "请综合分析这些实体在最近科技新闻中的最新动向、合作与竞争格局。"
+        cache_key = self._build_radar_cache_key(
+            kind="analyze",
+            news_id=news_id or "",
+            entities=entity_names,
+            question=question,
+        )
+        cached = news_cache.get_entity_analysis(cache_key)
+        if cached:
+            logger.info(f"[NewsRadar] 按图索骥 Redis缓存命中 key={cache_key}")
+            if user_id and news_id:
+                self.record_news_analysis(
+                    user_id=user_id,
+                    news_id=news_id,
+                    entities=cached.get("entities") or entity_names,
+                    question=cached.get("question") or question,
+                    answer=cached.get("answer") or "",
+                    local_news_count=int(cached.get("local_news_count") or 0),
+                    web_news_count=int(cached.get("web_news_count") or 0),
+                )
+            return cached
+
         records = neo4j_client.run_query(
             """
             MATCH (e:Entity)<-[:MENTIONS]-(n:News)
@@ -513,6 +560,7 @@ class NewsRadarService:
 
         web_news_items: List[Dict[str, Any]] = []
         web_query = " ".join(entity_names[:4])
+
         if self.search_tool:
             try:
                 web_results = await self.search_tool.search(web_query, max_results=8, days=7, topic="news")
@@ -544,6 +592,21 @@ class NewsRadarService:
 
         news_items = merged[:12]
 
+        # 将检索到的新闻入库为搜索档案，便于在档案列表中展示（防止匿名用户也可通过全局档案查看）
+        try:
+            search_topic = "、".join(entity_names[:4])
+            for item in news_items:
+                try:
+                    upsert_item = dict(item)
+                    upsert_item["is_search_archive"] = True
+                    upsert_item["search_topic"] = search_topic
+                    # 保留 source_urls 如果存在
+                    await self._upsert_news_with_entities(upsert_item)
+                except Exception as e:
+                    logger.warning(f"[NewsRadar] 将检索到的新闻入库失败: {e}")
+        except Exception:
+            logger.exception("[NewsRadar] 在入库搜索档案环节发生异常")
+
         if not news_items:
             context = "本地图谱和互联网搜索都未检索到可用新闻。"
         else:
@@ -554,7 +617,6 @@ class NewsRadarService:
                 )
             context = "\n\n".join(pieces)
 
-        question = user_question or "请综合分析这些实体在最近科技新闻中的最新动向、合作与竞争格局。"
         prompt = (
             f"用户关注的实体：{', '.join(entity_names)}\n\n"
             f"相关新闻（按时间与相关度排序）：\n{context}\n\n"
@@ -575,7 +637,7 @@ class NewsRadarService:
                 web_news_count=len(web_news_items),
             )
 
-        return {
+        result = {
             "question": question,
             "entities": entity_names,
             "news_count": len(news_items),
@@ -584,6 +646,8 @@ class NewsRadarService:
             "web_news_count": len(web_news_items),
             "answer": answer,
         }
+        news_cache.set_entity_analysis(cache_key, result)
+        return result
 
     # -------------------- internal helpers --------------------
 
@@ -1669,6 +1733,41 @@ class NewsRadarService:
         entity_pool = entities or [n.get("name") for n in detail.get("graph", {}).get("nodes", []) if n.get("type") != "News"]
         entity_pool = [e for e in entity_pool if e][:6]
 
+        # 追问缓存键：新闻 + 实体簇 + 追问内容 + 最近历史摘要
+        history_digest = ""
+        if analysis_history:
+            compact = analysis_history[-3:]
+            history_digest = " | ".join((h.get("question") or "")[:80] for h in compact)
+        followup_cache_key = self._build_radar_cache_key(
+            kind="followup",
+            news_id=news_id,
+            entities=entity_pool,
+            question=question,
+            extra_context=history_digest,
+        )
+        cached_followup = news_cache.get_entity_analysis(followup_cache_key)
+        if cached_followup:
+            logger.info(f"[NewsRadar] 继续追问 Redis缓存命中 key={followup_cache_key}")
+            if user_id:
+                with get_db_context() as db:
+                    history = db.query(UserNewsHistory).filter(
+                        UserNewsHistory.user_id == user_id,
+                        UserNewsHistory.news_id == news_id,
+                    ).first()
+                    if history:
+                        notes = self._parse_history_notes(history.notes)
+                        notes["followups"].append(
+                            {
+                                "ts": datetime.utcnow().isoformat(),
+                                "question": question,
+                                "answer": (cached_followup.get("answer") or "")[:2000],
+                            }
+                        )
+                        notes["followups"] = notes["followups"][-30:]
+                        history.notes = json.dumps(notes, ensure_ascii=False)
+                        db.commit()
+            return cached_followup
+
         local_news = await self.analyze_entities(
             entity_names=entity_pool or [detail.get("news", {}).get("title", "科技新闻")],
             user_question="请仅返回相关新闻，不要分析。",
@@ -1712,12 +1811,29 @@ class NewsRadarService:
                     history.notes = json.dumps(notes, ensure_ascii=False)
                     db.commit()
 
-        return {
+        result = {
             "question": question,
             "entities": entity_pool,
             "answer": answer,
             "news": local_news.get("news", []),
         }
+        news_cache.set_entity_analysis(followup_cache_key, result)
+        return result
+
+    def get_news_item_user_history(self, user_id: int, news_id: str) -> Dict[str, Any]:
+        """获取用户在某条新闻下的完整历史（按图索骥记录 + 追问记录），用于刷新后恢复。"""
+        with get_db_context() as db:
+            history = db.query(UserNewsHistory).filter(
+                UserNewsHistory.user_id == user_id,
+                UserNewsHistory.news_id == news_id,
+            ).first()
+            if not history:
+                return {"analysis_runs": [], "followups": []}
+            notes = self._parse_history_notes(history.notes)
+            return {
+                "analysis_runs": notes.get("analysis_runs", []),
+                "followups": notes.get("followups", []),
+            }
 
     def get_user_news_history(
         self, 

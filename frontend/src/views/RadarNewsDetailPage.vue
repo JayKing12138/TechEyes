@@ -184,10 +184,18 @@
                   </button>
                 </div>
 
-                <div v-if="followupHistory.length > 0" class="followup-history">
-                  <div v-for="(item, index) in followupHistory" :key="index" class="followup-item">
-                    <div class="followup-question">Q: {{ item.question }}</div>
-                    <div class="followup-answer"><MarkdownRenderer :content="item.answer" /></div>
+                <div v-if="followupHistory.length > 0" class="analysis-history">
+                  <h3 class="result-title">追问记录（{{ followupHistory.length }}）</h3>
+                  <div v-for="(item, index) in followupHistory" :key="index" class="analysis-run-card">
+                    <button class="analysis-run-header" @click="toggleFollowupExpanded(index)">
+                      <div>
+                        <div class="analysis-run-title">Q: {{ item.question }}</div>
+                      </div>
+                      <span class="analysis-expand-icon">{{ item.expanded ? '收起' : '展开' }}</span>
+                    </button>
+                    <div v-if="item.expanded" class="result-content">
+                      <MarkdownRenderer :content="item.answer" />
+                    </div>
                   </div>
                 </div>
               </div>
@@ -213,156 +221,10 @@
               </div>
             </div>
 
-            <div class="section report-section">
-              <h2 class="section-title">雷达报告</h2>
-              <p class="section-desc">生成该新闻的完整分析报告</p>
-              <button
-                class="report-btn"
-                @click="handleGenerateReport"
-                :disabled="generatingReport"
-              >
-                <svg v-if="!generatingReport" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                </svg>
-                <svg v-else class="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24">
-                  <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                  <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                </svg>
-                {{ generatingReport ? '生成中...' : '生成雷达报告' }}
-              </button>
-
-              <div v-if="reportData" class="report-preview">
-                <div class="report-summary">
-                  <h4>报告摘要</h4>
-                  <div class="summary-stats">
-                    <div class="stat">
-                      <span class="stat-value">{{ reportData.user_history.view_count }}</span>
-                      <span class="stat-label">查看次数</span>
-                    </div>
-                    <div class="stat">
-                      <span class="stat-value">{{ reportData.user_history.analysis_count }}</span>
-                      <span class="stat-label">分析次数</span>
-                    </div>
-                    <div class="stat">
-                      <span class="stat-value">{{ reportData.entities_summary.total_count }}</span>
-                      <span class="stat-label">实体数量</span>
-                    </div>
-                  </div>
-                </div>
-                <div class="report-actions">
-                  <button class="view-full-report-btn" @click="showFullReport = true">
-                    查看完整报告 →
-                  </button>
-                  <button class="download-report-btn" @click="handleDownloadReportPdf">
-                    下载 PDF
-                  </button>
-                </div>
-              </div>
-            </div>
           </div>
         </div>
       </div>
     </main>
-
-    <div v-if="showFullReport && reportData" class="report-modal" @click.self="showFullReport = false">
-      <div class="report-content">
-        <div class="report-header">
-          <h2>雷达报告</h2>
-          <div class="report-header-actions">
-            <button class="download-report-btn" @click="handleDownloadReportPdf">下载 PDF</button>
-            <button @click="showFullReport = false" class="close-btn">×</button>
-          </div>
-        </div>
-        <div class="report-body">
-          <div class="report-section">
-            <h3>新闻信息</h3>
-            <p class="report-news-title">{{ reportData.news.title }}</p>
-            <p class="report-news-meta">
-              {{ reportData.news.source }} | {{ formatTime(reportData.news.created_at) }}
-            </p>
-          </div>
-
-          <div class="report-section">
-            <h3>用户历史</h3>
-            <div class="history-stats">
-              <div class="history-item">
-                <span class="history-label">首次查看:</span>
-                <span class="history-value">{{ formatTime(reportData.user_history.first_viewed) }}</span>
-              </div>
-              <div class="history-item">
-                <span class="history-label">最后查看:</span>
-                <span class="history-value">{{ formatTime(reportData.user_history.last_viewed) }}</span>
-              </div>
-              <div class="history-item">
-                <span class="history-label">查看次数:</span>
-                <span class="history-value">{{ reportData.user_history.view_count }}</span>
-              </div>
-              <div class="history-item">
-                <span class="history-label">分析次数:</span>
-                <span class="history-value">{{ reportData.user_history.analysis_count }}</span>
-              </div>
-              <div class="history-item">
-                <span class="history-label">报告生成:</span>
-                <span class="history-value">{{ reportData.user_history.report_count }}</span>
-              </div>
-            </div>
-          </div>
-
-          <div class="report-section">
-            <h3>实体分析</h3>
-            <p class="report-entity-count">共发现 {{ reportData.entities_summary.total_count }} 个实体</p>
-            <div class="entity-types">
-              <div
-                v-for="(entities, type) in reportData.entities_summary.by_type"
-                :key="type"
-                class="entity-type-group"
-              >
-                <span class="type-label">{{ type }}:</span>
-                <span class="type-entities">{{ entities.join(', ') }}</span>
-              </div>
-            </div>
-          </div>
-
-          <div v-if="reportData.related_entities.length > 0" class="report-section">
-            <h3>相关实体</h3>
-            <div class="related-entities">
-              <div
-                v-for="entity in reportData.related_entities"
-                :key="entity.name"
-                class="related-entity"
-              >
-                <span class="related-name">{{ entity.name }}</span>
-                <span class="related-type">{{ entity.type }}</span>
-                <span class="related-co">共现 {{ entity.co_occurrence }} 次</span>
-              </div>
-            </div>
-          </div>
-
-          <div v-if="reportData.related_searches && reportData.related_searches.length > 0" class="report-section">
-            <h3>作者相关搜索档案</h3>
-            <div class="related-entities">
-              <div
-                v-for="(item, idx) in reportData.related_searches"
-                :key="`${item.id || idx}`"
-                class="related-entity"
-              >
-                <span class="related-name">{{ item.search_topic || item.title }}</span>
-                <span class="related-type">档案</span>
-              </div>
-            </div>
-          </div>
-
-          <div v-if="reportData.report_markdown" class="report-section">
-            <h3>完整分析内容</h3>
-            <MarkdownRenderer :content="reportData.report_markdown" />
-          </div>
-
-          <div class="report-footer">
-            <p class="report-time">生成时间: {{ formatTime(reportData.generated_at) }}</p>
-          </div>
-        </div>
-      </div>
-    </div>
   </div>
 </template>
 
@@ -376,13 +238,11 @@ import {
   getNewsDetail,
   analyzeEntities,
   askRadarFollowup,
-  generateNewsReport,
-  downloadNewsReportPdf,
+  getNewsMyHistory,
   type NewsDetail,
   type AnalyzeEntitiesRequest,
   type AnalyzeEntitiesResponse,
   type FollowupResponse,
-  type NewsReport
 } from '@/services/api'
 
 const route = useRoute()
@@ -418,11 +278,8 @@ const analysisHistory = ref<Array<{
 }>>([])
 const followupQuestion = ref('')
 const followupLoading = ref(false)
-const followupHistory = ref<FollowupResponse[]>([])
+const followupHistory = ref<Array<FollowupResponse & { expanded: boolean }>>([])
 
-const generatingReport = ref(false)
-const reportData = ref<NewsReport | null>(null)
-const showFullReport = ref(false)
 const isDragOver = ref(false)
 const draggingEntity = ref<any | null>(null)
 
@@ -518,6 +375,14 @@ const handleAnalyze = async () => {
       expanded: true
     })
     customQuestion.value = ''
+    // 通知其他页面刷新档案列表（如 RadarPage）——使用 localStorage 作为简单的跨窗口通知
+    try {
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('radar_archive_updated', String(Date.now()))
+      }
+    } catch (e) {
+      console.warn('无法写入 localStorage 通知档案更新', e)
+    }
   } catch (err: any) {
     console.error('分析失败:', err)
     error.value = err.message || '分析失败，请重试'
@@ -546,7 +411,7 @@ const handleFollowup = async () => {
         answer: item.result.answer
       }))
     })
-    followupHistory.value.unshift(response)
+    followupHistory.value.unshift({ ...response, expanded: true })
     followupQuestion.value = ''
   } catch (err: any) {
     console.error('追问失败:', err)
@@ -556,32 +421,9 @@ const handleFollowup = async () => {
   }
 }
 
-const handleGenerateReport = async () => {
-  try {
-    generatingReport.value = true
-    reportData.value = await generateNewsReport(newsId)
-  } catch (err: any) {
-    console.error('生成报告失败:', err)
-    error.value = err.message || '生成报告失败，请重试'
-  } finally {
-    generatingReport.value = false
-  }
-}
-
-const handleDownloadReportPdf = async () => {
-  try {
-    const blob = await downloadNewsReportPdf(newsId)
-    const objectUrl = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = objectUrl
-    a.download = `radar-report-${newsId}.pdf`
-    document.body.appendChild(a)
-    a.click()
-    document.body.removeChild(a)
-    URL.revokeObjectURL(objectUrl)
-  } catch (err: any) {
-    console.error('下载PDF失败:', err)
-    error.value = err.message || 'PDF下载失败，请重试'
+const toggleFollowupExpanded = (index: number) => {
+  if (followupHistory.value[index]) {
+    followupHistory.value[index].expanded = !followupHistory.value[index].expanded
   }
 }
 
@@ -610,8 +452,49 @@ const loadNewsDetail = async () => {
   }
 }
 
+/** 从后端恢复本用户在此新闻下的历史记录（按图索骥 + 追问） */
+const loadMyHistory = async () => {
+  try {
+    const data = await getNewsMyHistory(newsId)
+
+    // 恢复按图索骥记录
+    if (data.analysis_runs && data.analysis_runs.length > 0) {
+      analysisHistory.value = data.analysis_runs.map((run: any, idx: number) => ({
+        id: `${run.ts || idx}-restored`,
+        title: run.question || `${(run.entities || []).join('、')} 动向分析`,
+        requestEntities: run.entities || [],
+        result: {
+          question: run.question || '',
+          entities: run.entities || [],
+          news_count: (run.local_news_count || 0) + (run.web_news_count || 0),
+          news: [],
+          local_news_count: run.local_news_count || 0,
+          web_news_count: run.web_news_count || 0,
+          answer: run.answer || '',
+        },
+        expanded: idx === 0,  // 最新一条默认展开
+      }))
+    }
+
+    // 恢复追问记录
+    if (data.followups && data.followups.length > 0) {
+      followupHistory.value = data.followups.map((f: any, idx: number) => ({
+        question: f.question,
+        entities: [],
+        answer: f.answer,
+        news: [],
+        expanded: idx === 0,
+      }))
+    }
+  } catch (err) {
+    // 未登录或接口失败时静默降级，不影响主流程
+    console.warn('[RadarDetail] 无法加载历史记录（未登录或出错）', err)
+  }
+}
+
 onMounted(() => {
   loadNewsDetail()
+  loadMyHistory()
 })
 </script>
 
@@ -1052,30 +935,6 @@ onMounted(() => {
   color: rgba(226, 232, 240, 0.6);
 }
 
-.followup-history {
-  margin-top: 1rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
-}
-
-.followup-item {
-  border: 1px solid rgba(125, 211, 252, 0.14);
-  border-radius: 0.75rem;
-  padding: 0.875rem;
-  background: rgba(8, 47, 73, 0.25);
-}
-
-.followup-question {
-  color: #7dd3fc;
-  font-weight: 600;
-  margin-bottom: 0.5rem;
-}
-
-.followup-answer {
-  color: rgba(226, 232, 240, 0.9);
-}
-
 .entities-list {
   display: flex;
   flex-direction: column;
@@ -1253,184 +1112,5 @@ onMounted(() => {
   background: rgba(34, 197, 94, 0.22);
 }
 
-.report-modal {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: rgba(15, 23, 42, 0.95);
-  backdrop-filter: blur(10px);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
-  padding: 2rem;
-}
 
-.report-content {
-  background: rgba(15, 23, 42, 0.95);
-  border: 1px solid rgba(125, 211, 252, 0.3);
-  border-radius: 1rem;
-  max-width: 800px;
-  max-height: 90vh;
-  overflow-y: auto;
-  padding: 2rem;
-}
-
-.report-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 2rem;
-  padding-bottom: 1rem;
-  border-bottom: 1px solid rgba(125, 211, 252, 0.2);
-}
-
-.report-header h2 {
-  font-size: 1.75rem;
-  font-weight: 700;
-  color: #7dd3fc;
-}
-
-.report-header-actions {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-}
-
-.close-btn {
-  background: none;
-  border: none;
-  color: rgba(226, 232, 240, 0.6);
-  font-size: 2rem;
-  cursor: pointer;
-  transition: color 0.3s;
-}
-
-.close-btn:hover {
-  color: #f87171;
-}
-
-.report-body {
-  display: flex;
-  flex-direction: column;
-  gap: 2rem;
-}
-
-.report-section h3 {
-  font-size: 1.25rem;
-  font-weight: 600;
-  color: #a78bfa;
-  margin-bottom: 1rem;
-}
-
-.report-news-title {
-  font-size: 1.125rem;
-  font-weight: 600;
-  color: rgba(226, 232, 240, 0.9);
-  margin-bottom: 0.5rem;
-}
-
-.report-news-meta {
-  font-size: 0.875rem;
-  color: rgba(226, 232, 240, 0.6);
-}
-
-.history-stats {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 0.75rem;
-}
-
-.history-item {
-  display: flex;
-  justify-content: space-between;
-  padding: 0.5rem 0;
-  border-bottom: 1px solid rgba(125, 211, 252, 0.1);
-}
-
-.history-label {
-  color: rgba(226, 232, 240, 0.6);
-  font-size: 0.875rem;
-}
-
-.history-value {
-  color: #7dd3fc;
-  font-weight: 500;
-  font-size: 0.875rem;
-}
-
-.report-entity-count {
-  color: rgba(226, 232, 240, 0.9);
-  margin-bottom: 1rem;
-}
-
-.entity-types {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-}
-
-.entity-type-group {
-  display: flex;
-  gap: 0.5rem;
-  padding: 0.5rem;
-  background: rgba(15, 23, 42, 0.6);
-  border-radius: 0.5rem;
-}
-
-.type-label {
-  flex-shrink: 0;
-  color: #a78bfa;
-  font-weight: 500;
-  font-size: 0.875rem;
-}
-
-.type-entities {
-  color: rgba(226, 232, 240, 0.8);
-  font-size: 0.875rem;
-}
-
-.related-entities {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-}
-
-.related-entity {
-  display: flex;
-  align-items: center;
-  gap: 1rem;
-  padding: 0.75rem;
-  background: rgba(15, 23, 42, 0.6);
-  border-radius: 0.5rem;
-}
-
-.related-name {
-  flex: 1;
-  color: rgba(226, 232, 240, 0.9);
-  font-weight: 500;
-}
-
-.related-type {
-  color: #a78bfa;
-  font-size: 0.875rem;
-}
-
-.related-co {
-  color: rgba(226, 232, 240, 0.6);
-  font-size: 0.875rem;
-}
-
-.report-footer {
-  padding-top: 1rem;
-  border-top: 1px solid rgba(125, 211, 252, 0.2);
-}
-
-.report-time {
-  text-align: center;
-  color: rgba(226, 232, 240, 0.5);
-  font-size: 0.875rem;
-}
 </style>

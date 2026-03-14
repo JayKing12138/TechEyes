@@ -25,30 +25,6 @@ EXPOSE 8000
 # 使用 conda 环境运行应用
 CMD ["/bin/bash", "-c", "source activate techeyes && python main.py"]
 
-- Python 3.10+
-- （可选）Redis 用于高性能缓存
-
-### 步骤 1：环境变量配置
-
-```bash
-cp .env.example .env
-
-# 编辑 .env，填入你的 LLM API 密钥
-# 建议使用 DeepSeek（便宜且质量不错）
-LLM_API_KEY=sk-xxx  # 你的 API 密钥
-```
-
-### 步骤 2：启动后端
-
-```bash
-cd backend
-pip install -r requirements.txt
-python main.py
-
-# 输出示例：
-# 2025-03-06 14:30:45 | INFO | Uvicorn running on http://0.0.0.0:8000
-```
-
 ### 步骤 3：启动前端
 
 ```bash

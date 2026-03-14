@@ -13,7 +13,7 @@ try:
     
     # 初始化Redis客户端
     redis_client = redis.from_url(
-        config.redis.redis_url,
+        config.cache.redis_url,
         decode_responses=True
     )
     REDIS_AVAILABLE = True

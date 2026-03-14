@@ -521,6 +521,22 @@ export const getNewsHistory = async (
   return response.data
 }
 
+/** 获取当前用户在某条新闻下的按图索骥与追问历史（用于刷新后恢复） */
+export const getNewsMyHistory = async (newsId: string): Promise<{
+  analysis_runs: Array<{
+    ts: string
+    entities: string[]
+    question: string
+    answer: string
+    local_news_count: number
+    web_news_count: number
+  }>
+  followups: Array<{ ts: string; question: string; answer: string }>
+}> => {
+  const response = await api.get(`/radar/news/${newsId}/my-history`)
+  return response.data
+}
+
 export const generateNewsReport = async (newsId: string): Promise<NewsReport> => {
   const response = await api.get(`/radar/news/${newsId}/report`)
   return response.data

@@ -193,6 +193,20 @@ async def get_news_history(
     return result
 
 
+@router.get("/news/{news_id}/my-history")
+async def get_news_my_history(
+    news_id: str,
+    current_user: Optional[dict] = Depends(get_current_user)
+):
+    """获取当前用户在该新闻下的按图索骥与追问历史，供前端刷新后恢复。"""
+    if not current_user:
+        return {"analysis_runs": [], "followups": []}
+    return news_radar_service.get_news_item_user_history(
+        user_id=current_user["id"],
+        news_id=news_id,
+    )
+
+
 @router.get("/news/{news_id}/report", response_model=ReportResponse)
 async def generate_news_report(
     news_id: str,

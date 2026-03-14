@@ -129,6 +129,7 @@
               </div>
             </div>
             <button
+              v-if="activeTab === 'hot'"
               class="delete-btn"
               @click.stop="confirmDeleteNews(item.id, item.title)"
               title="删除档案"
@@ -148,7 +149,7 @@
 import { ref, onMounted, computed, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import Header from '@/components/Header.vue'
-import { getHotNews, searchNews, getSearchArchives, deleteNews, type HotNewsItem } from '@/services/api'
+import { getHotNews, searchNews, getNewsHistory, deleteNews, type HotNewsItem } from '@/services/api'
 
 const router = useRouter()
 
@@ -178,10 +179,18 @@ const loadHotNews = async () => {
 const loadArchives = async () => {
   try {
     loading.value = true
-    const response = await getSearchArchives(50)
-    archiveItems.value = response.items
+    // 使用用户私有历史接口（需要登录）
+    const response = await getNewsHistory(50, 0)
+    // 将后端的 user-history item 转换为前端列表项格式
+    archiveItems.value = (response.items || []).map((it: any) => ({
+      id: it.news_id, // 用新闻 ID 作为跳转 key
+      title: it.news_title || it.news_id,
+      snippet: it.news_snippet || '',
+      created_at: it.last_viewed_at || it.first_viewed_at || null,
+    }))
   } catch (error) {
     console.error('加载搜索档案失败:', error)
+    archiveItems.value = []
   } finally {
     loading.value = false
   }
@@ -258,6 +267,25 @@ const formatTime = (timeStr: string) => {
 onMounted(() => {
   loadHotNews()
   loadArchives()
+})
+
+// 监听来自其他页面的档案更新通知（例如在详情页按图索骥后写入 localStorage）
+const _onStorage = (e: StorageEvent) => {
+  if (e.key === 'radar_archive_updated') {
+    loadArchives()
+  }
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('storage', _onStorage)
+}
+
+// 在组件卸载时移除监听
+import { onBeforeUnmount } from 'vue'
+onBeforeUnmount(() => {
+  if (typeof window !== 'undefined') {
+    window.removeEventListener('storage', _onStorage)
+  }
 })
 
 // 监听 tab 切换，加载对应数据

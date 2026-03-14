@@ -86,6 +86,32 @@ python -c "import redis; r=redis.from_url('redis://localhost:6379'); print('Redi
 
 ## 配置说明
 
+## 持久化（RDB + AOF 同时开启）
+
+本项目已支持同时开启 RDB 与 AOF（推荐）：
+- `RDB`：周期性快照（重启恢复快）
+- `AOF`：追加写日志（数据更完整）
+
+在 Docker 方式下，配置文件位于：`infra/redis/redis.conf`。
+
+关键配置：
+- `save 900 1` / `save 300 10` / `save 60 10000`（RDB）
+- `appendonly yes` + `appendfsync everysec`（AOF）
+- `dir /data`（配合 `redis_data` 卷，容器重启不丢数据）
+
+验证持久化是否生效：
+```bash
+docker compose exec redis redis-cli CONFIG GET appendonly
+docker compose exec redis redis-cli CONFIG GET save
+docker compose exec redis ls -lah /data
+```
+
+重启 Redis 后验证数据恢复：
+```bash
+docker compose restart redis
+docker compose exec redis redis-cli GET test_key
+```
+
 ### 默认配置
 - **端口**: 6379
 - **地址**: localhost (127.0.0.1)
