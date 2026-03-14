@@ -1,32 +1,34 @@
 #!/bin/bash
-echo "🚀 启动 TechEyes 服务..."
-echo ""
-echo "方式 1: Docker 启动（推荐，支持 Conda 环境）"
-echo "  docker-compose up --build"
-echo ""
-echo "方式 2: 本地启动（需要 conda activate techeyes）"
-echo "  终端1: conda activate techeyes && cd backend && python main.py"
-echo "  终端2: cd frontend && npm run dev"
-echo ""
-read -p "选择启动方式 (1/2): " choice
+# TechEyes 本地开发启动脚本
+# 依赖：conda 环境 techeyes、Homebrew Redis、PostgreSQL
 
-if [ "$choice" = "1" ]; then
-    echo "🐳 使用 Docker 启动（Conda 环境已配置）..."
-    docker-compose up --build
-elif [ "$choice" = "2" ]; then
-    echo "📦 请手动在两个终端执行以下命令："
-    echo ""
-    echo "终端 1 (后端 - 使用 Conda):"
-    echo "  conda activate techeyes"
-    echo "  cd $(pwd)/backend && python main.py"
-    echo ""
-    echo "终端 2 (前端):"
-    echo "  cd $(pwd)/frontend && npm run dev"
-    echo ""
-    echo "💡 提示：如果 conda 环境不存在，先创建："
-    echo "  conda create -n techeyes python=3.10"
-    echo "  conda activate techeyes"
-    echo "  pip install -r backend/requirements.txt"
-else
-    echo "❌ 无效选择"
+set -e
+
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+
+echo "🚀 TechEyes 启动检查..."
+
+# ---- Redis ----
+if ! redis-cli ping > /dev/null 2>&1; then
+    echo "▶ 启动 Redis..."
+    brew services start redis
+    sleep 1
 fi
+echo "✅ Redis 就绪"
+
+# ---- 后端 ----
+echo ""
+echo "请在两个独立终端分别执行："
+echo ""
+echo "  终端 1 (后端):"
+echo "    conda activate techeyes"
+echo "    cd $ROOT/backend && python main.py"
+echo ""
+echo "  终端 2 (前端):"
+echo "    cd $ROOT/frontend && npm run dev"
+echo ""
+echo "💡 首次运行需安装依赖："
+echo "    conda create -n techeyes python=3.10   # 如未创建"
+echo "    conda activate techeyes"
+echo "    pip install -r $ROOT/backend/requirements.txt"
+echo "    cd $ROOT/frontend && npm install"

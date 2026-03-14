@@ -1,0 +1,2 @@
+{"id":"retriever-1","project_id":1,"question":"这个项目在缓存方面做了哪些优化？","expected_chunk_ids":[101,102],"top_k":15}
+{"id":"retriever-2","project_id":1,"question":"项目知识工作台的文档分割策略是什么？","expected_chunk_ids":[110,111],"top_k":15}

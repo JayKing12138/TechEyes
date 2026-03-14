@@ -51,6 +51,8 @@ class AnalyzeEntitiesResponse(BaseModel):
     local_news_count: Optional[int] = 0
     web_news_count: Optional[int] = 0
     answer: str
+    cache_hit: Optional[bool] = False
+    cache_source: Optional[str] = None
 
 
 class FollowupRequest(BaseModel):
@@ -65,6 +67,8 @@ class FollowupResponse(BaseModel):
     entities: List[str]
     answer: str
     news: list
+    cache_hit: Optional[bool] = False
+    cache_source: Optional[str] = None
 
 
 class SearchNewsRequest(BaseModel):
@@ -357,6 +361,36 @@ async def delete_all_news():
     except Exception as e:
         logger.error(f"清空全部新闻失败: {e}")
         raise HTTPException(status_code=500, detail=f"清空失败: {str(e)}")
+
+
+@router.delete("/cache")
+async def invalidate_news_cache(
+    scope: str = Query(default="all", description="失效范围: all | hot | detail"),
+    news_id: Optional[str] = Query(default=None, description="scope=detail 时指定新闻 ID")
+):
+    """
+    清除科技新闻雷达缓存（L1+L2）。
+    - scope=all: 清除全部新闻缓存
+    - scope=hot: 仅清除热榜缓存
+    - scope=detail&news_id=xxx: 清除指定新闻详情缓存
+    """
+    try:
+        if scope == "hot":
+            result = news_cache.invalidate_hot_news()
+            return {"scope": "hot", **result}
+        elif scope == "detail":
+            if not news_id:
+                raise HTTPException(status_code=400, detail="scope=detail 时必须提供 news_id")
+            result = news_cache.invalidate_news_detail(news_id)
+            return {"scope": "detail", "news_id": news_id, **result}
+        else:
+            result = news_cache.invalidate_all()
+            return {"scope": "all", **result}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"清除雷达缓存失败: {e}")
+        raise HTTPException(status_code=500, detail=f"清除缓存失败: {str(e)}")
 
 
 @router.post("/refresh")

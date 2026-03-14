@@ -14,6 +14,8 @@ from database import get_db
 from models.user import User
 from services.analysis_service import AnalysisService
 from services.chat_service import ChatService
+from services.project_rag_service import project_rag_service
+from services.news_cache import news_cache
 from services.auth_service import (
     hash_password,
     verify_password,
@@ -196,8 +198,20 @@ async def submit_analysis(
 ):
     """提交分析请求"""
     try:
-        session_id = str(uuid.uuid4())
         owner_key = resolve_owner_key(authorization=authorization, x_client_id=x_client_id)
+        session_id = str(uuid.uuid4())
+
+        # 统一缓存入口：命中则直接记录完成态会话，避免重复启动 ReAct 流程
+        cached_result = await analysis_service.try_get_cached_result(request, owner_key)
+        if cached_result is not None:
+            analysis_service.record_cached_session(
+                session_id=session_id,
+                query=request.query,
+                cached_result=cached_result,
+                owner_key=owner_key,
+            )
+            logger.info(f"[{session_id}] 分析请求缓存命中，直接返回")
+            return {"session_id": session_id, "cached": True}
 
         # 启动后台分析任务
         task = asyncio.create_task(
@@ -312,13 +326,20 @@ async def cancel_analysis(
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/cache/check")
-async def check_cache(request: CacheCheckRequest):
-    """缓存检查接口已废弃（系统当前仅使用记忆机制）。"""
+async def check_cache(
+    request: CacheCheckRequest,
+    authorization: Optional[str] = Header(default=None),
+    x_client_id: Optional[str] = Header(default=None),
+):
+    """检查智能决策问答缓存（owner 维度私有缓存）。"""
+    owner_key = resolve_owner_key(authorization=authorization, x_client_id=x_client_id)
+    probe_request = AnalysisRequest(query=request.query)
+    cached = await analysis_service.try_get_cached_result(probe_request, owner_key)
     return {
-        "enabled": False,
-        "hit": False,
-        "result": None,
-        "message": "cache_disabled_memory_mode",
+        "enabled": True,
+        "hit": cached is not None,
+        "result": cached,
+        "message": "ok",
     }
 
 
@@ -470,9 +491,14 @@ async def delete_conversation(
 
 @router.get("/cache/stats")
 async def get_cache_stats():
-    """兼容旧接口：返回记忆模式统计。"""
+    """返回全局缓存统计（智能决策 / 项目知识工作台 / 科技新闻雷达）。"""
     try:
-        return chat_service.get_cache_stats()
+        return {
+            "chat": chat_service.get_cache_stats(),
+            "analysis": analysis_service.kv_cache.get_cache_stats(),
+            "project_rag": project_rag_service.kv_cache.get_cache_stats(),
+            "news_radar": news_cache.get_stats(),
+        }
     except Exception as e:
         logger.error(f"获取缓存统计失败: {e}")
         raise HTTPException(status_code=500, detail=str(e))

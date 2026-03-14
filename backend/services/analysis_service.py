@@ -15,6 +15,7 @@ from agents.analyzer_agent import AnalyzerAgent
 from agents.synthesizer_agent import SynthesizerAgent
 from agents.critic_agent import CriticAgent
 from services.history_store import HistoryStore
+from services.cache_service import CacheService
 from tools.search_tools import TavilyTool, SERPAPITool
 
 config = get_config()
@@ -25,6 +26,7 @@ class AnalysisService:
     def __init__(self):
         self.sessions = {}
         self.history_store = HistoryStore()
+        self.kv_cache = CacheService()
 
         # ReAct 多Agent工作流
         self.orchestrator_agent = OrchestratorAgent()
@@ -36,6 +38,36 @@ class AnalysisService:
         # 初始化搜索工具（主+备用）
         self.primary_search = TavilyTool() if config.search.tavily_api_key else SERPAPITool()
         self.fallback_search = SERPAPITool() if config.search.tavily_api_key else None
+
+    def _build_cache_context(self, request) -> str:
+        """构造分析缓存上下文，保证同 query 但不同分析参数可区分。"""
+        focus = ",".join((request.focus_companies or [])[:8])
+        return (
+            f"depth={request.analysis_depth}|future={request.include_future_prediction}|focus={focus}|query={request.query}"
+        )
+
+    @staticmethod
+    def _build_model_signature() -> str:
+        return f"{config.llm.provider}:{config.llm.model_id}:analysis"
+
+    async def try_get_cached_result(self, request, owner_key: str) -> Optional[dict]:
+        """分析入口预检查缓存（L1/L2/L3）。"""
+        context_text = self._build_cache_context(request)
+        cached, cache_source = await self.kv_cache.get_chat_cached_result(
+            owner_key=owner_key,
+            query=request.query,
+            context_text=context_text,
+            model_signature=self._build_model_signature(),
+            allow_public=False,
+        )
+        if cached is None:
+            return None
+
+        payload = dict(cached)
+        payload.setdefault("metadata", {})
+        payload["metadata"]["cache_hit"] = True
+        payload["metadata"]["cache_source"] = cache_source
+        return payload
 
     @staticmethod
     def _tool_name(tool) -> str:
@@ -90,6 +122,18 @@ class AnalysisService:
                 "steps": []
             }
             self.history_store.upsert_session(self.sessions[session_id])
+
+            # 阶段0：缓存命中短路（与项目知识工作台一致：L1->L2->L3）
+            cached_result = await self.try_get_cached_result(request, owner_key)
+            if cached_result is not None:
+                self.sessions[session_id]["progress"] = 100
+                self.sessions[session_id]["status"] = "completed"
+                self.sessions[session_id]["result"] = cached_result
+                self.sessions[session_id]["end_time"] = datetime.now()
+                self.sessions[session_id]["steps"].append("缓存命中，已直接返回结果")
+                self.history_store.upsert_session(self.sessions[session_id])
+                logger.info(f"[{session_id}] 分析缓存命中，跳过 ReAct 流程")
+                return
             
             logger.info(f"[{session_id}] 开始分析：{request.query}")
             logger.info(f"[{session_id}] [MCP] 当前分析流程未接入 MCP 远程工具，使用本地 Tool 类执行")
@@ -205,6 +249,24 @@ class AnalysisService:
             self.sessions[session_id]["end_time"] = datetime.now()
             self.sessions[session_id]["steps"].append("分析完成！")
             self.history_store.upsert_session(self.sessions[session_id])
+
+            # 阶段6：回写缓存（仅缓存成功结果）
+            try:
+                context_text = self._build_cache_context(request)
+                cache_payload = dict(final_result)
+                cache_payload.setdefault("metadata", {})
+                cache_payload["metadata"]["cache_hit"] = False
+                await self.kv_cache.set_chat_cache(
+                    owner_key=owner_key,
+                    query=request.query,
+                    context_text=context_text,
+                    model_signature=self._build_model_signature(),
+                    result=cache_payload,
+                    allow_public=False,
+                )
+                logger.info(f"[{session_id}] 分析结果已写入 KV cache")
+            except Exception as cache_exc:
+                logger.warning(f"[{session_id}] 分析结果缓存写入失败: {cache_exc}")
             
             logger.info(f"[{session_id}] 分析完成")
             

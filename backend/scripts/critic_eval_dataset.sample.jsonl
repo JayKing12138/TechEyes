@@ -1,0 +1,2 @@
+{"id":"critic-1","query":"介绍类脑芯片架构","answer":"类脑芯片主要采用脉冲神经网络与事件驱动计算框架 [文档1]。","evidence_chunks":[{"retrieval_method":"dense","text":"类脑芯片通常采用脉冲神经网络（SNN）与事件驱动计算范式。"}],"label":{"hallucination":false,"citation_invalid":false,"sufficient":true,"valid":true}}
+{"id":"critic-2","query":"介绍类脑芯片架构","answer":"该技术已在全球200个国家大规模商用 [文档9]。","evidence_chunks":[{"retrieval_method":"dense","text":"文档仅讨论了实验室阶段验证，没有大规模商用证据。"}],"label":{"hallucination":true,"citation_invalid":true,"sufficient":false,"valid":false}}

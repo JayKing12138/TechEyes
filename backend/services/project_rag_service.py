@@ -1,5 +1,6 @@
 """项目 RAG 服务 - 多智能体编排架构"""
 
+import os
 from typing import List, Dict, Optional
 from loguru import logger
 
@@ -231,8 +232,16 @@ class ProjectRAGService:
             }
 
             # ========== 阶段7: 回写 KV Cache ==========
-            # 只缓存 Critic 认为有效的回答，避免低质量内容污染缓存
-            if validation.get("valid", True) is not False:
+            # 默认写缓存以保证重复问题可命中；可通过环境变量开启严格门禁。
+            # RAG_CACHE_REQUIRE_VALIDATION=true 时，只有 valid != False 才写缓存。
+            require_validation_for_cache = (
+                os.getenv("RAG_CACHE_REQUIRE_VALIDATION", "false").strip().lower() == "true"
+            )
+            should_cache = True
+            if require_validation_for_cache and validation.get("valid", True) is False:
+                should_cache = False
+
+            if should_cache:
                 try:
                     # doc_chunks 和 news_sources 可能含不可序列化对象，先做浅拷贝保平安
                     cache_payload = {
@@ -252,6 +261,8 @@ class ProjectRAGService:
                     logger.info("[ProjectRAG] 回答已写入 KV Cache")
                 except Exception as cache_exc:
                     logger.warning(f"[ProjectRAG] KV Cache 写入失败（不影响返回）: {cache_exc}")
+            else:
+                logger.info("[ProjectRAG] 跳过缓存写入：严格校验模式且 valid=False")
 
             return result
             

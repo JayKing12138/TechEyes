@@ -1,0 +1,3 @@
+{"id":"router-1","question":"介绍类脑智能芯片","expected":{"intent":"fact_query","complexity":"medium","need_web":false,"need_doc":true,"allow_model_knowledge":false}}
+{"id":"router-2","question":"对比类脑芯片和传统GPU在能效上的差异","expected":{"intent":"comparison","complexity":"medium","need_web":false,"need_doc":true,"allow_model_knowledge":false}}
+{"id":"router-3","question":"未来三年类脑芯片产业趋势如何，给出建议","expected":{"intent":"exploration","complexity":"high","need_web":true,"need_doc":true,"allow_model_knowledge":true}}

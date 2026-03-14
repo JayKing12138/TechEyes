@@ -28,12 +28,15 @@
 │   └── requirements.txt
 │
 └── README.md
-└── docker-compose.yml      # 本地测试用
 └── .env.example            # 环境变量示例
 
 ---
 
 🚀 快速开始
+
+## 前提：启动基础服务
+brew services start redis      # Redis（本地 Homebrew，持久化已配置）
+# PostgreSQL 另行启动（见 backend/POSTGRESQL_SETUP.md）
 
 ## 前端开发
 cd frontend
@@ -41,12 +44,10 @@ npm install
 npm run dev          # 在 http://localhost:5173 开启开发服务器
 
 ## 后端开发
+conda activate techeyes
 cd backend
 pip install -r requirements.txt
 python main.py       # 启动 FastAPI 服务器（http://localhost:8000）
-
-## Docker 启动
-docker-compose up    # 启动完整栈（前端 + 后端 + Redis）
 
 ---
 

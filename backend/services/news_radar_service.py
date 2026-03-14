@@ -527,6 +527,8 @@ class NewsRadarService:
         cached = news_cache.get_entity_analysis(cache_key)
         if cached:
             logger.info(f"[NewsRadar] 按图索骥 Redis缓存命中 key={cache_key}")
+            cached["cache_hit"] = True
+            cached["cache_source"] = "news:l2_or_l1"
             if user_id and news_id:
                 self.record_news_analysis(
                     user_id=user_id,
@@ -645,6 +647,8 @@ class NewsRadarService:
             "local_news_count": len(local_news_items),
             "web_news_count": len(web_news_items),
             "answer": answer,
+            "cache_hit": False,
+            "cache_source": None,
         }
         news_cache.set_entity_analysis(cache_key, result)
         return result
@@ -1748,6 +1752,8 @@ class NewsRadarService:
         cached_followup = news_cache.get_entity_analysis(followup_cache_key)
         if cached_followup:
             logger.info(f"[NewsRadar] 继续追问 Redis缓存命中 key={followup_cache_key}")
+            cached_followup["cache_hit"] = True
+            cached_followup["cache_source"] = "news:l2_or_l1"
             if user_id:
                 with get_db_context() as db:
                     history = db.query(UserNewsHistory).filter(
@@ -1816,6 +1822,8 @@ class NewsRadarService:
             "entities": entity_pool,
             "answer": answer,
             "news": local_news.get("news", []),
+            "cache_hit": False,
+            "cache_source": None,
         }
         news_cache.set_entity_analysis(followup_cache_key, result)
         return result
