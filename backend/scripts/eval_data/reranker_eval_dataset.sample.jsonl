@@ -1,0 +1,2 @@
+{"id":"reranker-1","project_id":1,"question":"这个项目在缓存方面做了哪些优化？","expected_chunk_ids":[101,102],"rerank_top_k":5,"enable_diversity":true,"max_per_doc":2}
+{"id":"reranker-2","project_id":1,"question":"项目知识工作台的文档分割策略是什么？","expected_chunk_ids":[110,111],"rerank_top_k":5,"enable_diversity":true,"max_per_doc":2}

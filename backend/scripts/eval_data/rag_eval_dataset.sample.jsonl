@@ -1,0 +1,2 @@
+{"id":"sample-1","project_id":1,"question":"这个项目在缓存方面做了哪些优化？","expected_chunk_ids":[101,102],"reference_answer":"项目采用了多层缓存策略，并在文档变更时进行缓存失效。","required_facts":["多层缓存","缓存失效"],"conversation_history":[],"enable_news":false}
+{"id":"sample-2","project_id":1,"question":"项目知识工作台的文档分割策略是什么？","expected_chunk_ids":[110,111],"reference_answer":"文档分割采用标题层级与动态字数结合的策略，并保留重叠窗口。","required_facts":["标题层级","动态字数","重叠"],"conversation_history":[],"enable_news":false}

@@ -1,0 +1,59 @@
+# OS
+.DS_Store
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+.Python
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Python environments
+.venv/
+venv/
+env/
+ENV/
+
+# Node / Frontend dependencies
+node_modules/
+frontend/node_modules/
+
+# Build artifacts
+build/
+dist/
+coverage/
+frontend/dist/
+
+# Logs
+*.log
+logs/
+backend/logs/
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Runtime / data caches
+*.sqlite3
+*.db
+backend/data/
+data/chroma/
+data/storage/
+data/uploads/
+
+# Jupyter
+.ipynb_checkpoints/
